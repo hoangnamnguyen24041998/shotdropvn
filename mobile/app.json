@@ -1,0 +1,56 @@
+{
+  "expo": {
+    "name": "ShotDropVN",
+    "slug": "shotdropvn",
+    "version": "1.2.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#F7F7F5"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "vn.shotdrop.mobile"
+    },
+    "android": {
+      "package": "vn.shotdrop.mobile",
+      "permissions": [
+        "READ_MEDIA_IMAGES",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "ACCESS_MEDIA_LOCATION",
+        "INTERNET",
+        "ACCESS_NETWORK_STATE"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundColor": "#F7F7F5",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Cho phép ShotDrop tự động nhận ảnh mới chuyển từ máy ảnh qua Wi-Fi.",
+          "savePhotosPermission": "Cho phép ShotDrop lưu ảnh vào thư viện.",
+          "isAccessMediaLocationEnabled": true,
+          "granularPermissions": ["photo"]
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Cho phép ShotDrop chọn ảnh từ thư viện để tải lên phiên chụp."
+        }
+      ]
+    ]
+  }
+}
