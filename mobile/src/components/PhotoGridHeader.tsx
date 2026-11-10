@@ -21,15 +21,20 @@ export const PhotoGridHeader: React.FC<PhotoGridHeaderProps> = ({
   onSelectAll,
   onClearSelection,
 }) => {
+  // If there are no photos in the session, do not render any header row
+  if (totalCount === 0) {
+    return null;
+  }
+
+  const hasFilterActions =
+    uploadedCount > 0 || (totalCount > 0 && selectedCount < totalCount) || selectedCount > 0;
+
+  if (!hasFilterActions) {
+    return null;
+  }
+
   return (
     <View style={styles.gridHeaderRow}>
-      <View style={styles.gridTitleGroup}>
-        <Text style={styles.gridHeaderTitle}>Ảnh trong phiên</Text>
-        <View style={styles.gridCountPill}>
-          <Text style={styles.gridCountPillText}>{totalCount}</Text>
-        </View>
-      </View>
-
       <View style={styles.gridHeaderActions}>
         {uploadedCount > 0 && (
           <Pressable
