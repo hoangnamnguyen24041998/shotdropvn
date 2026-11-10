@@ -184,13 +184,7 @@ export function useActiveSession(options?: {
       }
 
       const newQrHash = generateQrHash();
-      const eventTitle = `Canon 6D Live • ${new Date().toLocaleTimeString(
-        'vi-VN',
-        {
-          hour: '2-digit',
-          minute: '2-digit',
-        }
-      )}`;
+      const eventTitle = `Phiên chụp #${newQrHash}`;
 
       let createdSession: ActiveSession = {
         id: `sess-${Date.now()}-${newQrHash}`,

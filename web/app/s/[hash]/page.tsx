@@ -583,7 +583,9 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
                 <h1 className="font-extrabold text-sm sm:text-base text-stone-900 truncate tracking-tight">
                   {isStandby
                     ? 'ShotDropVN Studio'
-                    : session?.event_name ||
+                    : (session?.event_name || '')
+                        .replace(/Canon\s*6D\s*Live\s*•?\s*/gi, '')
+                        .trim() ||
                       (activeHash
                         ? `Phiên chụp #${activeHash}`
                         : 'ShotDropVN Live')}

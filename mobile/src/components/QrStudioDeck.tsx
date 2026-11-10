@@ -72,9 +72,6 @@ export const QrStudioDeck: React.FC<QrStudioDeckProps> = ({
                   <Text style={styles.liveTagText}>ĐANG PHÁT</Text>
                 </View>
               </View>
-              <Text style={styles.sessionEventName} numberOfLines={1}>
-                {activeSession.event_name}
-              </Text>
             </View>
 
             <View style={styles.counterBox}>
@@ -99,18 +96,6 @@ export const QrStudioDeck: React.FC<QrStudioDeckProps> = ({
               />
             </View>
           </View>
-
-          <Pressable
-            onPress={handleShareQrLink}
-            style={({ pressed }) => [
-              styles.guestUrlPill,
-              pressed && styles.subtlePressed,
-            ]}
-          >
-            <Text style={styles.guestUrlText} numberOfLines={1}>
-              {guestUrl}
-            </Text>
-          </Pressable>
 
           {/* Pulsing Live Sync Banner */}
           <Animated.View

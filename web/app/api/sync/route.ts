@@ -127,7 +127,7 @@ export async function POST(request: NextRequest) {
 
       const newSession: StoredSession = {
         id: `sess-${Date.now()}-${qrHash}`,
-        event_name: body.event_name || `Canon 6D Live #${qrHash}`,
+        event_name: body.event_name || `Phiên chụp #${qrHash}`,
         qr_code_hash: qrHash,
         created_at: new Date().toISOString(),
         is_active: true,
@@ -196,7 +196,7 @@ export async function POST(request: NextRequest) {
         ).toLowerCase();
         targetSession = {
           id: body.session_id || `sess-${Date.now()}-${qrHash}`,
-          event_name: `Canon 6D Live #${qrHash}`,
+          event_name: `Phiên chụp #${qrHash}`,
           qr_code_hash: qrHash,
           created_at: new Date().toISOString(),
         };

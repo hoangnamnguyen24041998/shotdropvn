@@ -24,15 +24,14 @@ import { PhotoTile } from './src/components/PhotoTile';
 import { EmptyPhotoView } from './src/components/EmptyPhotoView';
 import { SelectionFloatingBar } from './src/components/SelectionFloatingBar';
 import { SelectionMenuModal } from './src/components/SelectionMenuModal';
-import { UrlConfigModal } from './src/components/UrlConfigModal';
 import { DeletingSpinnerModal } from './src/components/DeletingSpinnerModal';
 import { ToastBanner } from './src/components/ToastBanner';
 
 // Styles
 import { styles } from './src/styles/appStyles';
 
-export const APP_VERSION = '1.2.3';
-export const APP_BUILD = 6;
+export const APP_VERSION = '1.2.4';
+export const APP_BUILD = 7;
 
 export default function App() {
   const { toast, showToast } = useToast();
@@ -248,15 +247,11 @@ export default function App() {
     <View style={styles.safeArea}>
       <ExpoStatusBar style="dark" />
 
-      {/* App Header (No STANDBY view, no sub description) */}
+      {/* App Header (No STANDBY view, no sub description, no URL config button) */}
       <AppHeader
         appVersion={APP_VERSION}
         activeSession={activeSession}
         usbCameraStatus={usbCameraStatus}
-        onOpenSettings={() => {
-          setDraftWebOrigin(webOrigin);
-          setIsUrlModalVisible(true);
-        }}
       />
 
       <FlatList
@@ -367,20 +362,6 @@ export default function App() {
         onClearSelection={clearSelection}
         onUploadSelected={handleUploadSelected}
         onDeleteSelected={handleDeleteSelected}
-      />
-
-      {/* URL & Supabase Key Configuration Modal */}
-      <UrlConfigModal
-        visible={isUrlModalVisible}
-        draftWebOrigin={draftWebOrigin}
-        draftAnonKey={draftAnonKey}
-        supabaseReady={supabaseReady}
-        onChangeDraftWebOrigin={setDraftWebOrigin}
-        onChangeDraftAnonKey={setDraftAnonKey}
-        onSave={() => {
-          void handleSaveWebOrigin();
-        }}
-        onClose={() => setIsUrlModalVisible(false)}
       />
 
       {/* Deleting Spinner Modal */}
