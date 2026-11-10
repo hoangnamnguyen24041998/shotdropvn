@@ -201,6 +201,30 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
   const [newlyAddedId, setNewlyAddedId] = useState<string | null>(null);
   const [loadedMap, setLoadedMap] = useState<Record<string, boolean>>({});
   const [isLargeGrid, setIsLargeGrid] = useState<boolean>(false);
+  const [copiedLink, setCopiedLink] = useState<boolean>(false);
+  const [sessionJustEndedNotice, setSessionJustEndedNotice] = useState<boolean>(false);
+
+  const handleCopyLink = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    void navigator.clipboard.writeText(window.location.href);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2400);
+  }, []);
+
+  const formattedEndTime = useMemo(() => {
+    if (!session?.ended_at) return null;
+    try {
+      const d = new Date(session.ended_at);
+      return d.toLocaleTimeString('vi-VN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        day: '2-digit',
+        month: '2-digit',
+      });
+    } catch {
+      return null;
+    }
+  }, [session?.ended_at]);
 
   const markImageLoaded = useCallback((photoId: string) => {
     setLoadedMap((prev) =>
@@ -355,7 +379,12 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
       setSession((prev) => (prev ? { ...prev, ...localData.session } : localData.session));
       const isSessionActive =
         localData.session.is_active !== false && !localData.session.ended_at;
-      setIsLive(isSessionActive);
+      setIsLive((prevLive) => {
+        if (prevLive && !isSessionActive) {
+          setSessionJustEndedNotice(true);
+        }
+        return isSessionActive;
+      });
 
       setPhotos((prev) => {
         const remoteIds = new Set(localData.photos.map((p) => p.id));
@@ -436,7 +465,12 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
           if (!updated?.id) return;
           setSession((prev) => (prev ? { ...prev, ...updated } : updated));
           const stillActive = updated.is_active !== false && !updated.ended_at;
-          setIsLive(stillActive);
+          setIsLive((prevLive) => {
+            if (prevLive && !stillActive) {
+              setSessionJustEndedNotice(true);
+            }
+            return stillActive;
+          });
         }
       )
       .subscribe((status) => {
@@ -583,15 +617,39 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
         </div>
       </header>
 
+      {/* Realtime Session Just Ended Notice Banner */}
+      {sessionJustEndedNotice && (
+        <div className="bg-amber-50 border-b border-amber-200/90 text-amber-900 px-3 sm:px-6 py-2.5 text-xs font-medium flex items-center justify-between gap-3 animate-slide-down">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
+            <span>
+              <strong>Thông báo:</strong> Nhiếp ảnh gia vừa kết thúc phiên chụp này. Toàn bộ ảnh đã được lưu trữ an toàn và sẵn sàng để bạn tải về bên dưới.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSessionJustEndedNotice(false)}
+            aria-label="Đóng thông báo"
+            className="px-2 py-0.5 rounded text-amber-800 hover:text-amber-950 hover:bg-amber-100 font-bold cursor-pointer transition shrink-0"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Direct Photo List (Masonry Grid) */}
       <main className="max-w-6xl mx-auto px-3 sm:px-6 py-4 pb-16">
-        {photos.length === 0 ? (
-          <div className="py-20 px-4 rounded-2xl bg-white border border-stone-200/90 shadow-2xs text-center flex flex-col items-center justify-center gap-3 mt-2">
-            {isSessionEnded ? (
-              <div className="flex flex-col items-center max-w-sm text-center py-4">
-                <div className="w-12 h-12 rounded-2xl bg-stone-100 flex items-center justify-center text-stone-500 mb-3 border border-stone-200">
+        {/* Editorial Session Archive Banner when Session Ended and has photos */}
+        {isSessionEnded && photos.length > 0 && (
+          <section
+            aria-label="Thông tin lưu trữ phiên chụp"
+            className="mb-5 p-4 sm:p-5 rounded-2xl bg-white border border-stone-200/90 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+          >
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-stone-100 text-stone-700 border border-stone-200">
                   <svg
-                    className="w-6 h-6 text-stone-500"
+                    className="w-3.5 h-3.5 text-stone-600"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -600,17 +658,133 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
                     <path
                       strokeLinecap="round"
                       strokeLinejoin="round"
-                      strokeWidth={2}
+                      strokeWidth={2.2}
                       d="M5 13l4 4L19 7"
                     />
                   </svg>
+                  Phiên chụp hoàn thành
+                </span>
+                {formattedEndTime && (
+                  <span className="text-xs text-stone-500 font-medium">
+                    Đã đóng lúc {formattedEndTime}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs sm:text-sm text-stone-600 max-w-xl">
+                Toàn bộ <strong className="text-stone-900">{photos.length} ảnh sự kiện</strong> đã được lưu trữ an toàn. Nhấn vào bất kỳ ảnh nào để xem phóng to chi tiết hoặc tải ảnh gốc chất lượng cao về máy.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={handleCopyLink}
+                className="min-h-[38px] px-3.5 py-1.5 rounded-full bg-stone-100 hover:bg-stone-200/80 text-xs font-bold text-stone-800 border border-stone-200/90 inline-flex items-center gap-1.5 transition active:scale-95 cursor-pointer"
+              >
+                {copiedLink ? (
+                  <>
+                    <svg
+                      className="w-3.5 h-3.5 text-emerald-600"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2.2}
+                        d="M5 13l4 4L19 7"
+                      />
+                    </svg>
+                    <span className="text-emerald-700">Đã chép link!</span>
+                  </>
+                ) : (
+                  <>
+                    <svg
+                      className="w-3.5 h-3.5 text-stone-600"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+                      />
+                    </svg>
+                    <span>Chia sẻ link album</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </section>
+        )}
+
+        {photos.length === 0 ? (
+          <div className="py-16 sm:py-24 px-4 rounded-3xl bg-white border border-stone-200/90 shadow-2xs text-center flex flex-col items-center justify-center gap-4 mt-2 max-w-lg mx-auto">
+            {isSessionEnded ? (
+              <div className="flex flex-col items-center text-center max-w-md px-2">
+                <div className="w-14 h-14 rounded-2xl bg-stone-100 border border-stone-200/80 flex items-center justify-center text-stone-600 mb-2 shadow-2xs">
+                  <svg
+                    className="w-7 h-7 text-stone-700"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={1.8}
+                      d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"
+                    />
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={1.8}
+                      d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"
+                    />
+                  </svg>
                 </div>
-                <h2 className="text-base font-bold text-stone-900">
-                  Phiên chụp đã kết thúc
+                <h2 className="text-lg font-extrabold text-stone-900 tracking-tight">
+                  Phiên chụp #{activeHash} đã hoàn tất
                 </h2>
-                <p className="text-xs text-stone-600 mt-1">
-                  Phiên chụp này hiện không có ảnh lưu trữ hoặc đã kết thúc.
+                <p className="text-xs sm:text-sm text-stone-600 mt-1.5 leading-relaxed">
+                  Nhiếp ảnh gia đã đóng phiên chụp này. Hiện tại chưa có ảnh nào được xuất lên album hoặc các bức ảnh thử nghiệm đã được dọn dẹp.
                 </p>
+                <div className="flex flex-wrap items-center justify-center gap-2.5 mt-5">
+                  <button
+                    type="button"
+                    onClick={() => window.location.reload()}
+                    className="min-h-[38px] px-4 py-2 rounded-full bg-stone-900 hover:bg-black text-white text-xs font-bold inline-flex items-center gap-1.5 transition active:scale-95 cursor-pointer shadow-2xs"
+                  >
+                    <svg
+                      className="w-3.5 h-3.5"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                      />
+                    </svg>
+                    <span>Kiểm tra lại</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCopyLink}
+                    className="min-h-[38px] px-4 py-2 rounded-full bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-bold border border-stone-200 inline-flex items-center gap-1.5 transition active:scale-95 cursor-pointer"
+                  >
+                    <span>{copiedLink ? 'Đã sao chép link' : 'Sao chép link'}</span>
+                  </button>
+                </div>
               </div>
             ) : (
               <ShotDropLogoSpinner
