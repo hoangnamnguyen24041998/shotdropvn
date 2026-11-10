@@ -115,7 +115,8 @@ class SupabaseNotConfiguredError extends Error {
   }
 }
 
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.2.1';
+export const APP_BUILD = 4;
 
 export default function App() {
   const [activeSession, setActiveSession] = useState<ActiveSession | null>(
@@ -1755,7 +1756,7 @@ export default function App() {
         ListFooterComponent={
           <View style={styles.versionFooterWrap}>
             <Text style={styles.versionFooterText}>
-              ShotDropVN Studio • Version {APP_VERSION} (Build 3)
+              ShotDropVN Studio • Version {APP_VERSION} (Build {APP_BUILD})
             </Text>
           </View>
         }

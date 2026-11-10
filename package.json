@@ -1,0 +1,14 @@
+{
+  "name": "shotdropvn-workspace",
+  "version": "1.2.1",
+  "private": true,
+  "scripts": {
+    "bump": "node scripts/bump-version.js patch",
+    "bump:minor": "node scripts/bump-version.js minor",
+    "bump:major": "node scripts/bump-version.js major",
+    "build:apk": "cd mobile/android && ./gradlew assembleRelease --no-daemon",
+    "release": "bash scripts/push.sh patch",
+    "release:minor": "bash scripts/push.sh minor",
+    "release:major": "bash scripts/push.sh major"
+  }
+}

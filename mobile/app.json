@@ -2,7 +2,7 @@
   "expo": {
     "name": "ShotDropVN",
     "slug": "shotdropvn",
-    "version": "1.2.0",
+    "version": "1.2.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -30,7 +30,8 @@
         "backgroundColor": "#F7F7F5",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
-      }
+      },
+      "versionCode": 4
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -42,7 +43,9 @@
           "photosPermission": "Cho phép ShotDrop tự động nhận ảnh mới chuyển từ máy ảnh qua Wi-Fi.",
           "savePhotosPermission": "Cho phép ShotDrop lưu ảnh vào thư viện.",
           "isAccessMediaLocationEnabled": true,
-          "granularPermissions": ["photo"]
+          "granularPermissions": [
+            "photo"
+          ]
         }
       ],
       [
