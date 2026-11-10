@@ -905,7 +905,11 @@ export default function App() {
           ];
         });
 
-        if (options?.checkAutoUpload && !uploadingRef.current) {
+        if (
+          options?.checkAutoUpload &&
+          !uploadingRef.current &&
+          activeSessionRef.current !== null
+        ) {
           const threshold = lastSyncTimeRef.current;
           const newlyArrived = assets.filter(
             (a) =>
@@ -938,12 +942,7 @@ export default function App() {
         setIsExpoGoAndroidRestricted(true);
       } else {
         try {
-          const { status } = await MediaLibrary.requestPermissionsAsync(false, [
-            'photo',
-          ]);
-          if (status === 'granted') {
-            await fetchAndSyncMediaLibrary({ checkAutoUpload: false });
-          }
+          await MediaLibrary.requestPermissionsAsync(false, ['photo']);
         } catch (err) {
           const msg = err instanceof Error ? err.message : '';
           if (msg.includes('Expo Go')) {
@@ -959,7 +958,7 @@ export default function App() {
     }
 
     void init();
-  }, [fetchAndSyncMediaLibrary]);
+  }, []);
 
   // Continuous Live OTG & Tether Watcher Loop (Every 1.8 seconds!)
   useEffect(() => {
@@ -1032,7 +1031,7 @@ export default function App() {
         }
 
         // 3. Continuous Gallery Watcher (for MTP / Canon Connect auto-save into phone gallery)
-        if (!isExpoGoAndroidRestricted) {
+        if (!isExpoGoAndroidRestricted && activeSessionRef.current !== null) {
           await fetchAndSyncMediaLibrary({ checkAutoUpload: true });
         }
       } finally {
@@ -1052,7 +1051,11 @@ export default function App() {
   // AppState listener when returning to foreground
   useEffect(() => {
     const handleAppStateChange = (nextState: AppStateStatus) => {
-      if (nextState === 'active' && !isExpoGoAndroidRestricted) {
+      if (
+        nextState === 'active' &&
+        !isExpoGoAndroidRestricted &&
+        activeSessionRef.current !== null
+      ) {
         void fetchAndSyncMediaLibrary({ checkAutoUpload: true });
       }
     };
@@ -1122,6 +1125,11 @@ export default function App() {
     setSessionPhotosCount(0);
     setSelectedPhotoIds([]);
     setLongPressedPhotoId(null);
+    setRecentPhotos([]);
+    setUploadedPhotoIds([]);
+    uploadedIdsSetRef.current.clear();
+    uploadedMetaMapRef.current.clear();
+
     const now = Date.now();
     setLastSyncTime(now);
     lastSyncTimeRef.current = now;
@@ -1134,18 +1142,45 @@ export default function App() {
       try {
         const client = getSupabaseClient();
         if (client) {
-          await client
+          // 1. Delete all storage files in shotdrop_photos for this session
+          try {
+            const { data: storageFiles } = await client.storage
+              .from(STORAGE_BUCKET)
+              .list(sessionToEnd.id);
+            if (storageFiles && storageFiles.length > 0) {
+              const filePaths = storageFiles.map(
+                (f) => `${sessionToEnd.id}/${f.name}`
+              );
+              await client.storage.from(STORAGE_BUCKET).remove(filePaths);
+            }
+          } catch (storageErr) {
+            console.warn('[Supabase Storage] Lỗi xoá file phiên:', storageErr);
+          }
+
+          // 2. Delete photo rows from photos table
+          try {
+            await client
+              .from('photos')
+              .delete()
+              .eq('session_id', sessionToEnd.id);
+          } catch (pErr) {
+            console.warn('[Supabase Photos] Lỗi xoá rows ảnh:', pErr);
+          }
+
+          // 3. Delete session row from sessions table
+          const { error: delErr } = await client
             .from('sessions')
-            .update({
-              is_active: false,
-              ended_at: new Date().toISOString(),
-            })
+            .delete()
             .eq('id', sessionToEnd.id);
+          if (delErr) {
+            console.warn('[Supabase Sessions] Lỗi xoá session row:', delErr);
+          }
         }
       } catch (err) {
-        console.warn('[Supabase] Lỗi cập nhật kết thúc session:', err);
+        console.warn('[Supabase] Lỗi dọn dẹp kết thúc session:', err);
       }
 
+      // 4. Notify local relay API to delete session and photos from local store
       try {
         await fetchWithTimeout(`${webOriginRef.current}/api/sync`, {
           method: 'POST',
@@ -2337,7 +2372,7 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.xxl * 2,
   },
   listContentWithBottomBar: {
-    paddingBottom: 248,
+    paddingBottom: Platform.OS === 'android' ? 280 : 248,
   },
   headerStack: {
     gap: spacing.md,
@@ -2928,10 +2963,12 @@ const styles = StyleSheet.create({
   },
   minimizedSelectionBarWrap: {
     position: 'absolute',
-    bottom: Platform.OS === 'ios' ? 24 : 16,
+    bottom: Platform.OS === 'android' ? 76 : 28,
     left: 16,
     right: 16,
     alignItems: 'center',
+    zIndex: 9999,
+    elevation: 20,
   },
   minimizedSelectionPill: {
     width: '100%',
@@ -2988,6 +3025,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 16,
     paddingVertical: 24,
+    paddingBottom: Platform.OS === 'android' ? 84 : 24,
   },
   centerSelectionCard: {
     width: '100%',

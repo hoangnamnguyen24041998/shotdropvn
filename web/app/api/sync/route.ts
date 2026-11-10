@@ -72,7 +72,7 @@ export async function GET(request: NextRequest) {
 
   const session = hash
     ? store.sessions.find((s) => s.qr_code_hash.toLowerCase() === hash) ?? null
-    : store.sessions.find((s) => s.is_active !== false) ?? store.sessions[0] ?? null;
+    : store.sessions.find((s) => s.is_active !== false && !s.ended_at) ?? null;
 
   if (!session) {
     return NextResponse.json(
@@ -259,6 +259,44 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json(
         { removedCount, remainingPhotos: store.photos.length },
+        { headers: corsHeaders }
+      );
+    }
+
+    if (body.action === 'end_session') {
+      const targetSessionId = body.session_id;
+      const targetHash = body.qr_code_hash?.toLowerCase();
+
+      // Find sessions to remove
+      const sessionIdsToRemove = new Set(
+        store.sessions
+          .filter(
+            (s) =>
+              (targetSessionId && s.id === targetSessionId) ||
+              (targetHash && s.qr_code_hash.toLowerCase() === targetHash)
+          )
+          .map((s) => s.id)
+      );
+
+      // Remove session from store
+      store.sessions = store.sessions.filter(
+        (s) => !sessionIdsToRemove.has(s.id)
+      );
+
+      // Also remove all associated photos
+      store.photos = store.photos.filter(
+        (p) => !sessionIdsToRemove.has(p.session_id)
+      );
+
+      await writeStore(store);
+
+      return NextResponse.json(
+        {
+          success: true,
+          removedSessionsCount: sessionIdsToRemove.size,
+          remainingSessions: store.sessions.length,
+          remainingPhotos: store.photos.length,
+        },
         { headers: corsHeaders }
       );
     }

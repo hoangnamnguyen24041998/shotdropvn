@@ -312,18 +312,7 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
               .order('created_at', { ascending: false })
               .limit(1)
               .maybeSingle();
-            if (activeData) {
-              sessionData = activeData;
-            } else {
-              // Otherwise load latest session (archived)
-              const { data: latestData } = await supabase
-                .from('sessions')
-                .select('id, event_name, qr_code_hash, created_at, is_active, ended_at')
-                .order('created_at', { ascending: false })
-                .limit(1)
-                .maybeSingle();
-              sessionData = latestData;
-            }
+            sessionData = activeData;
           }
 
           if (sessionData && isMounted) {
@@ -368,42 +357,71 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
     };
   }, [fetchLocalRelay, hash]);
 
-  // 2. Supabase Realtime Subscription + Local Live Relay Polling (every 2s)
+  // 2. Supabase Realtime Subscription + Polling Fallback (every 2s)
   useEffect(() => {
     let isMounted = true;
 
     const pollInterval = setInterval(async () => {
+      // A. Check Local Live Relay
       const localData = await fetchLocalRelay(hash);
-      if (!isMounted || !localData?.session) return;
+      if (localData?.session) {
+        setSession((prev) => (prev ? { ...prev, ...localData.session } : localData.session));
+        const isSessionActive =
+          localData.session.is_active !== false && !localData.session.ended_at;
+        setIsLive((prevLive) => {
+          if (prevLive && !isSessionActive) {
+            setSessionJustEndedNotice(true);
+          }
+          return isSessionActive;
+        });
 
-      setSession((prev) => (prev ? { ...prev, ...localData.session } : localData.session));
-      const isSessionActive =
-        localData.session.is_active !== false && !localData.session.ended_at;
-      setIsLive((prevLive) => {
-        if (prevLive && !isSessionActive) {
-          setSessionJustEndedNotice(true);
+        setPhotos((prev) => {
+          const remoteIds = new Set(localData.photos.map((p) => p.id));
+          const existingIds = new Set(prev.map((p) => p.id));
+          const incoming = localData.photos.filter((p) => !existingIds.has(p.id));
+          const wasRemoved = prev.some((p) => !remoteIds.has(p.id));
+
+          if (incoming.length === 0 && !wasRemoved) return prev;
+
+          if (incoming.length > 0) {
+            const newestId = incoming[0].id;
+            setNewlyAddedId(newestId);
+            setTimeout(() => {
+              setNewlyAddedId((curr) => (curr === newestId ? null : curr));
+            }, 3500);
+          }
+
+          return localData.photos;
+        });
+      }
+
+      // B. If Supabase is configured and we had a session, verify it's still alive in DB
+      if (isSupabaseConfigured && session?.id) {
+        try {
+          const { data: remoteSession } = await supabase
+            .from('sessions')
+            .select('id, event_name, qr_code_hash, created_at, is_active, ended_at')
+            .eq('id', session.id)
+            .maybeSingle();
+
+          if (!isMounted) return;
+
+          if (!remoteSession) {
+            // Session was DELETED from DB!
+            setSession(null);
+            setPhotos([]);
+            setIsLive(false);
+            setSessionJustEndedNotice(true);
+          } else if (remoteSession.is_active === false || remoteSession.ended_at) {
+            // Session was ENDED in DB!
+            setSession((prev) => (prev ? { ...prev, ...remoteSession } : (remoteSession as Session)));
+            setIsLive(false);
+            setSessionJustEndedNotice(true);
+          }
+        } catch {
+          // Ignore network glitch
         }
-        return isSessionActive;
-      });
-
-      setPhotos((prev) => {
-        const remoteIds = new Set(localData.photos.map((p) => p.id));
-        const existingIds = new Set(prev.map((p) => p.id));
-        const incoming = localData.photos.filter((p) => !existingIds.has(p.id));
-        const wasRemoved = prev.some((p) => !remoteIds.has(p.id));
-
-        if (incoming.length === 0 && !wasRemoved) return prev;
-
-        if (incoming.length > 0) {
-          const newestId = incoming[0].id;
-          setNewlyAddedId(newestId);
-          setTimeout(() => {
-            setNewlyAddedId((curr) => (curr === newestId ? null : curr));
-          }, 3500);
-        }
-
-        return localData.photos;
-      });
+      }
     }, 2000);
 
     if (!session?.id || !isSupabaseConfigured) {
@@ -450,6 +468,23 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
           const deleted = payload.old as { id?: string };
           if (!deleted?.id) return;
           setPhotos((prev) => prev.filter((p) => p.id !== deleted.id));
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'DELETE',
+          schema: 'public',
+          table: 'sessions',
+        },
+        (payload) => {
+          const deleted = payload.old as { id?: string };
+          if (!deleted?.id || deleted.id === session?.id) {
+            setSession(null);
+            setPhotos([]);
+            setIsLive(false);
+            setSessionJustEndedNotice(true);
+          }
         }
       )
       .on(
@@ -520,8 +555,12 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
     return <ShotDropLoadingSkeleton hash={hash} />;
   }
 
+  const isStandby = !hash && !session;
   const isSessionEnded =
-    session?.is_active === false || Boolean(session?.ended_at);
+    Boolean(sessionJustEndedNotice) ||
+    session?.is_active === false ||
+    Boolean(session?.ended_at) ||
+    (Boolean(hash) && !session);
   const activeHash = session?.qr_code_hash || hash;
 
   return (
@@ -542,12 +581,19 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <h1 className="font-extrabold text-sm sm:text-base text-stone-900 truncate tracking-tight">
-                  {session?.event_name ||
-                    (activeHash
-                      ? `Phiên chụp #${activeHash}`
-                      : 'ShotDropVN Live')}
+                  {isStandby
+                    ? 'ShotDropVN Studio'
+                    : session?.event_name ||
+                      (activeHash
+                        ? `Phiên chụp #${activeHash}`
+                        : 'ShotDropVN Live')}
                 </h1>
-                {isSessionEnded ? (
+                {isStandby ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold bg-stone-100 text-stone-600 border border-stone-200 shrink-0">
+                    <span className="w-1.5 h-1.5 rounded-full bg-stone-400" />
+                    Đang chờ phiên
+                  </span>
+                ) : isSessionEnded ? (
                   <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold bg-stone-100 text-stone-600 border border-stone-200 shrink-0">
                     <span className="w-1.5 h-1.5 rounded-full bg-stone-400" />
                     Đã kết thúc
@@ -559,13 +605,17 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
                   </span>
                 )}
               </div>
-              {activeHash && (
+              {isStandby ? (
+                <p className="text-[11px] font-medium text-stone-600 truncate">
+                  Sẵn sàng nhận ảnh từ máy ảnh Canon / Sony / Nikon qua app
+                </p>
+              ) : activeHash ? (
                 <p className="text-[11px] font-medium text-stone-600 truncate">
                   {isSessionEnded
                     ? `Mã phiên #${activeHash} • Phiên chụp đã kết thúc`
                     : `Mã phiên #${activeHash} • Ảnh gốc tự động cập nhật`}
                 </p>
-              )}
+              ) : null}
             </div>
           </div>
 
@@ -725,11 +775,58 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
 
         {photos.length === 0 ? (
           <div className="py-16 sm:py-24 px-4 rounded-3xl bg-white border border-stone-200/90 shadow-2xs text-center flex flex-col items-center justify-center gap-4 mt-2 max-w-lg mx-auto">
-            {isSessionEnded ? (
+            {isStandby ? (
               <div className="flex flex-col items-center text-center max-w-md px-2">
-                <div className="w-14 h-14 rounded-2xl bg-stone-100 border border-stone-200/80 flex items-center justify-center text-stone-600 mb-2 shadow-2xs">
+                <div className="w-16 h-16 rounded-2xl bg-stone-100 border border-stone-200/80 flex items-center justify-center text-stone-700 mb-3 shadow-2xs relative">
+                  <Image
+                    src="/icon.png"
+                    alt="ShotDropVN Logo"
+                    width={36}
+                    height={36}
+                    loading="eager"
+                    unoptimized
+                    className="rounded-xl shadow-xs relative z-10"
+                  />
+                </div>
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-stone-100 text-stone-600 border border-stone-200 mb-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-stone-400" />
+                  ShotDropVN Studio
+                </div>
+                <h2 className="text-lg sm:text-xl font-extrabold text-stone-900 tracking-tight">
+                  Chưa có phiên chụp nào đang diễn ra
+                </h2>
+                <p className="text-xs sm:text-sm text-stone-600 mt-2 leading-relaxed">
+                  Nhiếp ảnh gia hiện chưa phát trực tiếp album mới. Quét mã QR được chia sẻ bởi nhiếp ảnh gia hoặc mở ứng dụng điện thoại để bắt đầu phiên chụp.
+                </p>
+                <div className="flex flex-wrap items-center justify-center gap-2.5 mt-5">
+                  <button
+                    type="button"
+                    onClick={() => window.location.reload()}
+                    className="min-h-[40px] px-5 py-2 rounded-full bg-stone-900 hover:bg-black text-white text-xs font-bold inline-flex items-center gap-2 transition active:scale-95 cursor-pointer shadow-xs"
+                  >
+                    <svg
+                      className="w-3.5 h-3.5"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                      />
+                    </svg>
+                    <span>Tải lại trang</span>
+                  </button>
+                </div>
+              </div>
+            ) : isSessionEnded ? (
+              <div className="flex flex-col items-center text-center max-w-md px-2">
+                <div className="w-16 h-16 rounded-2xl bg-stone-100 border border-stone-200/80 flex items-center justify-center text-stone-600 mb-3 shadow-2xs">
                   <svg
-                    className="w-7 h-7 text-stone-700"
+                    className="w-8 h-8 text-stone-600"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -739,27 +836,25 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
                       strokeLinecap="round"
                       strokeLinejoin="round"
                       strokeWidth={1.8}
-                      d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"
-                    />
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={1.8}
-                      d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"
+                      d="M5 13l4 4L19 7"
                     />
                   </svg>
                 </div>
-                <h2 className="text-lg font-extrabold text-stone-900 tracking-tight">
-                  Phiên chụp #{activeHash} đã hoàn tất
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-stone-100 text-stone-600 border border-stone-200 mb-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-stone-400" />
+                  Phiên chụp hoàn tất
+                </div>
+                <h2 className="text-lg sm:text-xl font-extrabold text-stone-900 tracking-tight">
+                  Phiên chụp {activeHash ? `#${activeHash}` : ''} đã kết thúc
                 </h2>
-                <p className="text-xs sm:text-sm text-stone-600 mt-1.5 leading-relaxed">
-                  Nhiếp ảnh gia đã đóng phiên chụp này. Hiện tại chưa có ảnh nào được xuất lên album hoặc các bức ảnh thử nghiệm đã được dọn dẹp.
+                <p className="text-xs sm:text-sm text-stone-600 mt-2 leading-relaxed">
+                  Nhiếp ảnh gia đã đóng phiên chụp này. Dữ liệu trên hệ thống đã được dọn dẹp hoặc phiên đã được lưu trữ an toàn theo yêu cầu bảo mật.
                 </p>
                 <div className="flex flex-wrap items-center justify-center gap-2.5 mt-5">
                   <button
                     type="button"
                     onClick={() => window.location.reload()}
-                    className="min-h-[38px] px-4 py-2 rounded-full bg-stone-900 hover:bg-black text-white text-xs font-bold inline-flex items-center gap-1.5 transition active:scale-95 cursor-pointer shadow-2xs"
+                    className="min-h-[40px] px-4 py-2 rounded-full bg-stone-900 hover:bg-black text-white text-xs font-bold inline-flex items-center gap-2 transition active:scale-95 cursor-pointer shadow-xs"
                   >
                     <svg
                       className="w-3.5 h-3.5"
@@ -780,10 +875,16 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
                   <button
                     type="button"
                     onClick={handleCopyLink}
-                    className="min-h-[38px] px-4 py-2 rounded-full bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-bold border border-stone-200 inline-flex items-center gap-1.5 transition active:scale-95 cursor-pointer"
+                    className="min-h-[40px] px-4 py-2 rounded-full bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-bold border border-stone-200/90 inline-flex items-center gap-2 transition active:scale-95 cursor-pointer"
                   >
                     <span>{copiedLink ? 'Đã sao chép link' : 'Sao chép link'}</span>
                   </button>
+                  <a
+                    href="/"
+                    className="min-h-[40px] px-4 py-2 rounded-full bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-bold border border-stone-200/90 inline-flex items-center gap-2 transition active:scale-95 cursor-pointer"
+                  >
+                    <span>Về trang chủ</span>
+                  </a>
                 </div>
               </div>
             ) : (
