@@ -1,15 +1,21 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
+export const DEFAULT_SUPABASE_PROJECT_URL =
+  'https://larjhgvrctokpwfhrlpc.supabase.co';
+
+export const DEFAULT_SUPABASE_PUBLISHABLE_KEY =
+  'sb_publishable_Xdor_OSHSSVTzoauwrzdyg_eEMr4QeN';
+
+export const DEFAULT_SUPABASE_LEGACY_ANON_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxhcmpoZ3ZyY3Rva3B3ZmhybHBjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQyNDU1OTAsImV4cCI6MjEwOTgyMTU5MH0.P5847kcjIwA_rUzVm_HqrbbjzFZ1Q5oKrHOFIMCzU1Q';
+
 export const SUPABASE_PROJECT_URL =
-  process.env.EXPO_PUBLIC_SUPABASE_URL?.trim() ||
-  'https://offobwrujfirkjllvvps.supabase.co';
+  process.env.EXPO_PUBLIC_SUPABASE_URL?.trim() || DEFAULT_SUPABASE_PROJECT_URL;
 
 const envAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY?.trim() ?? '';
 
-let runtimeAnonKey = envAnonKey;
-
 export function isValidAnonKey(key?: string): boolean {
-  const k = (key ?? runtimeAnonKey).trim();
+  const k = (key ?? '').trim();
   return (
     Boolean(k) &&
     k.length > 20 &&
@@ -18,14 +24,18 @@ export function isValidAnonKey(key?: string): boolean {
   );
 }
 
+let runtimeAnonKey = isValidAnonKey(envAnonKey)
+  ? envAnonKey
+  : DEFAULT_SUPABASE_PUBLISHABLE_KEY;
+
 export const isSupabaseConfigured =
   Boolean(SUPABASE_PROJECT_URL) &&
   !SUPABASE_PROJECT_URL.includes('your-project-id') &&
-  isValidAnonKey(envAnonKey);
+  isValidAnonKey(runtimeAnonKey);
 
 let activeClient: SupabaseClient = createClient(
   SUPABASE_PROJECT_URL,
-  isValidAnonKey(runtimeAnonKey) ? runtimeAnonKey : 'placeholder-anon-key',
+  runtimeAnonKey,
   {
     auth: {
       persistSession: false,
@@ -36,8 +46,8 @@ let activeClient: SupabaseClient = createClient(
 
 export function setRuntimeSupabaseAnonKey(newKey: string): void {
   const cleaned = newKey.trim();
-  runtimeAnonKey = cleaned;
   if (isValidAnonKey(cleaned)) {
+    runtimeAnonKey = cleaned;
     activeClient = createClient(SUPABASE_PROJECT_URL, cleaned, {
       auth: {
         persistSession: false,
@@ -48,7 +58,7 @@ export function setRuntimeSupabaseAnonKey(newKey: string): void {
 }
 
 export function getRuntimeSupabaseAnonKey(): string {
-  return isValidAnonKey(runtimeAnonKey) ? runtimeAnonKey : '';
+  return runtimeAnonKey;
 }
 
 export function isSupabaseReady(): boolean {
