@@ -138,6 +138,30 @@ export default function App() {
     'Sẵn sàng đồng bộ Live qua cáp USB OTG hoặc Canon Connect'
   );
 
+  // Deleting Photos State (Loading Spinner & Toast notification)
+  const [isDeletingPhotos, setIsDeletingPhotos] = useState<boolean>(false);
+  const [deletingCount, setDeletingCount] = useState<number>(0);
+  const [toast, setToast] = useState<{
+    id: number;
+    type: 'success' | 'error' | 'info';
+    message: string;
+  } | null>(null);
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = useCallback(
+    (type: 'success' | 'error' | 'info', message: string, durationMs = 3500) => {
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current);
+      }
+      const id = Date.now();
+      setToast({ id, type, message });
+      toastTimeoutRef.current = setTimeout(() => {
+        setToast((curr) => (curr?.id === id ? null : curr));
+      }, durationMs);
+    },
+    []
+  );
+
   // Public Web Origin State (defaults to Public HTTPS Cloudflare/Vercel URL, never localhost)
   const [webOrigin, setWebOrigin] = useState<string>(GUEST_WEB_ORIGIN);
   const [isUrlModalVisible, setIsUrlModalVisible] = useState<boolean>(false);
@@ -359,6 +383,7 @@ export default function App() {
   const lastSyncTimeRef = useRef<number>(lastSyncTime);
   const uploadedIdsSetRef = useRef<Set<string>>(new Set());
   const deletedIdsSetRef = useRef<Set<string>>(new Set());
+  const uploadedMetaMapRef = useRef<Map<string, { storagePath?: string }>>(new Map());
   const knownSafFilesSetRef = useRef<Set<string>>(new Set());
   const isOtgPollingRef = useRef<boolean>(false);
 
@@ -518,6 +543,7 @@ export default function App() {
           const client = getSupabaseClient();
           const arrayBuffer = decode(base64Data);
           const storagePath = `${currentSession.id}/${Date.now()}_${cleanFilename}`;
+          uploadedMetaMapRef.current.set(item.id, { storagePath });
 
           const { error: storageErr } = await client.storage
             .from(STORAGE_BUCKET)
@@ -541,6 +567,8 @@ export default function App() {
           const { error: dbErr } = await client.from('photos').insert({
             session_id: currentSession.id,
             image_url: urlData.publicUrl,
+            client_photo_id: item.id,
+            storage_path: storagePath,
           });
 
           if (dbErr) {
@@ -611,70 +639,113 @@ export default function App() {
     [ensureActiveSession]
   );
 
-  // Delete one or multiple photos from mobile app list (and sync removal to Web server)
-  const executeDeletePhotos = useCallback(async (idsToRemove: string[]) => {
-    if (idsToRemove.length === 0) return;
-
-    const idSet = new Set(idsToRemove);
-    let uploadedRemovedCount = 0;
-
-    for (const id of idsToRemove) {
-      deletedIdsSetRef.current.add(id);
-      if (uploadedIdsSetRef.current.has(id)) {
-        uploadedIdsSetRef.current.delete(id);
-        uploadedRemovedCount += 1;
-      }
-    }
-
-    setRecentPhotos((prev) => prev.filter((item) => !idSet.has(item.id)));
-    setSelectedPhotoIds((prev) => prev.filter((id) => !idSet.has(id)));
-    setUploadedPhotoIds(Array.from(uploadedIdsSetRef.current));
-    setLongPressedPhotoId(null);
-
-    if (uploadedRemovedCount > 0) {
-      setSessionPhotosCount((prev) => Math.max(0, prev - uploadedRemovedCount));
-    }
-
-    // Sync removal to Web server (/api/sync)
-    try {
-      await fetch(`${webOriginRef.current}/api/sync`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'delete_photos',
-          client_photo_ids: idsToRemove,
-        }),
-      });
-    } catch {
-      // Ignore if offline
-    }
-
-    setStatusMessage(`Đã xoá ${idsToRemove.length} ảnh khỏi danh sách.`);
-  }, []);
-
-  const confirmDeletePhotos = useCallback(
-    (idsToRemove: string[]) => {
+  // Delete one or multiple photos from mobile app list (and sync removal to Web server & Supabase)
+  const executeDeletePhotos = useCallback(
+    async (idsToRemove: string[]) => {
       if (idsToRemove.length === 0) return;
 
-      Alert.alert(
-        `Xoá ${idsToRemove.length} ảnh?`,
-        idsToRemove.length === 1
-          ? 'Ảnh này sẽ được xoá khỏi danh sách trên ứng dụng (và gỡ khỏi album Web nếu đã đẩy).'
-          : `${idsToRemove.length} ảnh đã chọn sẽ được xoá khỏi danh sách trên ứng dụng (và gỡ khỏi album Web nếu đã đẩy).`,
-        [
-          { text: 'Huỷ', style: 'cancel' },
-          {
-            text: 'Xoá ảnh',
-            style: 'destructive',
-            onPress: () => {
-              void executeDeletePhotos(idsToRemove);
-            },
-          },
-        ]
-      );
+      const count = idsToRemove.length;
+      setDeletingCount(count);
+      setIsDeletingPhotos(true);
+      setLongPressedPhotoId(null);
+      setIsSelectionMenuExpanded(false);
+
+      try {
+        const idSet = new Set(idsToRemove);
+        let uploadedRemovedCount = 0;
+
+        for (const id of idsToRemove) {
+          deletedIdsSetRef.current.add(id);
+          if (uploadedIdsSetRef.current.has(id)) {
+            uploadedIdsSetRef.current.delete(id);
+            uploadedRemovedCount += 1;
+          }
+        }
+
+        // 1. Delete from Supabase Database and Storage if configured
+        const client = getSupabaseClient();
+        if (client) {
+          try {
+            // Find storage paths for these client_photo_ids
+            const { data: dbRows } = await client
+              .from('photos')
+              .select('id, storage_path, client_photo_id')
+              .in('client_photo_id', idsToRemove);
+
+            const storagePaths: string[] = [];
+            if (dbRows && dbRows.length > 0) {
+              for (const row of dbRows) {
+                if (row.storage_path) {
+                  storagePaths.push(row.storage_path);
+                }
+              }
+            }
+            for (const id of idsToRemove) {
+              const meta = uploadedMetaMapRef.current.get(id);
+              if (meta?.storagePath && !storagePaths.includes(meta.storagePath)) {
+                storagePaths.push(meta.storagePath);
+              }
+              uploadedMetaMapRef.current.delete(id);
+            }
+
+            // Remove files from Supabase Storage bucket
+            if (storagePaths.length > 0) {
+              await client.storage.from(STORAGE_BUCKET).remove(storagePaths);
+            }
+
+            // Delete rows from Supabase photos table
+            await client
+              .from('photos')
+              .delete()
+              .in('client_photo_id', idsToRemove);
+          } catch (sbErr) {
+            console.warn('[Supabase] Lỗi xoá remote photo:', sbErr);
+          }
+        }
+
+        // 2. Sync removal to Web server (/api/sync)
+        try {
+          await fetchWithTimeout(`${webOriginRef.current}/api/sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'delete_photos',
+              client_photo_ids: idsToRemove,
+            }),
+          });
+        } catch {
+          // Ignore if offline
+        }
+
+        // 3. Update local state
+        setRecentPhotos((prev) => prev.filter((item) => !idSet.has(item.id)));
+        setSelectedPhotoIds((prev) => prev.filter((id) => !idSet.has(id)));
+        setUploadedPhotoIds(Array.from(uploadedIdsSetRef.current));
+
+        if (uploadedRemovedCount > 0) {
+          setSessionPhotosCount((prev) =>
+            Math.max(0, prev - uploadedRemovedCount)
+          );
+        }
+
+        setStatusMessage(`Đã xoá ${count} ảnh.`);
+        showToast(
+          'success',
+          count > 1 ? `Đã xoá ${count} ảnh thành công!` : 'Đã xoá ảnh thành công!'
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        showToast('error', `Xoá ảnh thất bại: ${msg}`);
+      } finally {
+        setIsDeletingPhotos(false);
+        setDeletingCount(0);
+      }
     },
-    [executeDeletePhotos]
+    [showToast]
   );
+
+  // Alias for backward compatibility without double confirmation
+  const confirmDeletePhotos = executeDeletePhotos;
 
   // Manual connect / scan USB OTG Camera
   const handleConnectUsbOtgCamera = useCallback(async () => {
@@ -1022,7 +1093,7 @@ export default function App() {
   const handleDeleteSelected = () => {
     if (selectedPhotoIds.length === 0) return;
     setIsSelectionMenuExpanded(false);
-    confirmDeletePhotos(selectedPhotoIds);
+    void executeDeletePhotos(selectedPhotoIds);
   };
 
   const handleSelectAllUploaded = () => {
@@ -1043,7 +1114,9 @@ export default function App() {
     }
   };
 
-  const handleEndSession = () => {
+  const handleEndSession = async () => {
+    const sessionToEnd = activeSessionRef.current || activeSession;
+
     setActiveSession(null);
     activeSessionRef.current = null;
     setSessionPhotosCount(0);
@@ -1055,6 +1128,38 @@ export default function App() {
     setStatusMessage(
       'Đã kết thúc phiên. Bấm chụp qua cáp OTG hoặc chọn ảnh mới để tạo mã QR tiếp theo.'
     );
+    showToast('info', 'Đã kết thúc phiên chụp.');
+
+    if (sessionToEnd?.id) {
+      try {
+        const client = getSupabaseClient();
+        if (client) {
+          await client
+            .from('sessions')
+            .update({
+              is_active: false,
+              ended_at: new Date().toISOString(),
+            })
+            .eq('id', sessionToEnd.id);
+        }
+      } catch (err) {
+        console.warn('[Supabase] Lỗi cập nhật kết thúc session:', err);
+      }
+
+      try {
+        await fetchWithTimeout(`${webOriginRef.current}/api/sync`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'end_session',
+            session_id: sessionToEnd.id,
+            qr_code_hash: sessionToEnd.qr_code_hash,
+          }),
+        });
+      } catch {
+        // Ignore if offline
+      }
+    }
   };
 
   const guestUrl = activeSession
@@ -1578,8 +1683,10 @@ export default function App() {
                     </Pressable>
 
                     <Pressable
-                      onPress={() => confirmDeletePhotos([item.id])}
-                      disabled={uploading}
+                      onPress={() => {
+                        void executeDeletePhotos([item.id]);
+                      }}
+                      disabled={uploading || isDeletingPhotos}
                       accessibilityLabel="Xoá ảnh này"
                       style={({ pressed }) => [
                         styles.iconCircleBtn,
@@ -2019,6 +2126,50 @@ export default function App() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      {/* Loading Spinner Modal during photo deletion */}
+      <Modal
+        visible={isDeletingPhotos}
+        transparent
+        animationType="fade"
+      >
+        <View style={styles.deletingModalOverlay}>
+          <View style={styles.deletingModalCard}>
+            <ActivityIndicator size="large" color={colors.live} />
+            <Text style={styles.deletingModalTitle}>
+              Đang xoá {deletingCount > 1 ? `${deletingCount} ảnh...` : 'ảnh...'}
+            </Text>
+            <Text style={styles.deletingModalSubtitle}>
+              Đang đồng bộ dữ liệu với hệ thống
+            </Text>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Floating Toast Notification */}
+      {toast && (
+        <View
+          style={[
+            styles.toastContainer,
+            toast.type === 'success' && styles.toastSuccess,
+            toast.type === 'error' && styles.toastError,
+            toast.type === 'info' && styles.toastInfo,
+          ]}
+        >
+          <View style={styles.toastIconBox}>
+            {toast.type === 'success' ? (
+              <CheckIcon size={15} color="#FFFFFF" />
+            ) : toast.type === 'error' ? (
+              <CloseIcon size={15} color="#FFFFFF" />
+            ) : (
+              <SparklesIcon size={15} color="#FFFFFF" />
+            )}
+          </View>
+          <Text style={styles.toastMessageText} numberOfLines={2}>
+            {toast.message}
+          </Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -3174,5 +3325,78 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
     marginTop: 4,
+  },
+  deletingModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.xl,
+  },
+  deletingModalCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radii.xl,
+    paddingVertical: spacing.xl,
+    paddingHorizontal: spacing.xxl,
+    alignItems: 'center',
+    gap: spacing.sm,
+    minWidth: 220,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 24,
+    elevation: 20,
+  },
+  deletingModalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    marginTop: 8,
+  },
+  deletingModalSubtitle: {
+    fontSize: 12,
+    color: colors.textSecondary,
+  },
+  toastContainer: {
+    position: 'absolute',
+    top: Platform.OS === 'android' ? (StatusBar.currentHeight ?? 0) + 12 : 54,
+    left: spacing.lg,
+    right: spacing.lg,
+    zIndex: 9999,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: radii.lg,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.2,
+    shadowRadius: 14,
+    elevation: 16,
+  },
+  toastSuccess: {
+    backgroundColor: '#0F766E',
+  },
+  toastError: {
+    backgroundColor: '#BE123C',
+  },
+  toastInfo: {
+    backgroundColor: '#1E293B',
+  },
+  toastIconBox: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: 'rgba(255, 255, 255, 0.22)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toastMessageText: {
+    flex: 1,
+    fontSize: 13.5,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    lineHeight: 18,
   },
 });

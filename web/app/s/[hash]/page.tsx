@@ -10,6 +10,8 @@ export interface Session {
   event_name: string;
   qr_code_hash: string;
   created_at: string;
+  is_active?: boolean;
+  ended_at?: string;
 }
 
 export interface Photo {
@@ -273,17 +275,38 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
         if (isSupabaseConfigured) {
           const sessionQuery = supabase
             .from('sessions')
-            .select('id, event_name, qr_code_hash, created_at');
+            .select('id, event_name, qr_code_hash, created_at, is_active, ended_at');
 
-          const { data: sessionData } = hash
-            ? await sessionQuery.eq('qr_code_hash', hash).maybeSingle()
-            : await sessionQuery
+          let sessionData: Session | null = null;
+          if (hash) {
+            const { data } = await sessionQuery.eq('qr_code_hash', hash).maybeSingle();
+            sessionData = data;
+          } else {
+            // First check if there is an active session
+            const { data: activeData } = await sessionQuery
+              .eq('is_active', true)
+              .order('created_at', { ascending: false })
+              .limit(1)
+              .maybeSingle();
+            if (activeData) {
+              sessionData = activeData;
+            } else {
+              // Otherwise load latest session (archived)
+              const { data: latestData } = await supabase
+                .from('sessions')
+                .select('id, event_name, qr_code_hash, created_at, is_active, ended_at')
                 .order('created_at', { ascending: false })
                 .limit(1)
                 .maybeSingle();
+              sessionData = latestData;
+            }
+          }
 
           if (sessionData && isMounted) {
             setSession(sessionData);
+            const isSessionActive = sessionData.is_active !== false && !sessionData.ended_at;
+            setIsLive(isSessionActive);
+
             const { data: photosData } = await supabase
               .from('photos')
               .select('id, session_id, image_url, created_at')
@@ -303,7 +326,9 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
         if (isMounted && localData?.session) {
           setSession(localData.session);
           setPhotos(localData.photos);
-          setIsLive(true);
+          const isSessionActive =
+            localData.session.is_active !== false && !localData.session.ended_at;
+          setIsLive(isSessionActive);
         }
       } finally {
         if (isMounted) {
@@ -327,8 +352,10 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
       const localData = await fetchLocalRelay(hash);
       if (!isMounted || !localData?.session) return;
 
-      setSession((prev) => prev ?? localData.session);
-      setIsLive(true);
+      setSession((prev) => (prev ? { ...prev, ...localData.session } : localData.session));
+      const isSessionActive =
+        localData.session.is_active !== false && !localData.session.ended_at;
+      setIsLive(isSessionActive);
 
       setPhotos((prev) => {
         const remoteIds = new Set(localData.photos.map((p) => p.id));
@@ -358,7 +385,7 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
     }
 
     const channel = supabase
-      .channel(`realtime:photos:${session.id}`)
+      .channel(`realtime:session-channel:${session.id}`)
       .on(
         'postgres_changes',
         {
@@ -382,8 +409,42 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
           }, 3500);
         }
       )
+      .on(
+        'postgres_changes',
+        {
+          event: 'DELETE',
+          schema: 'public',
+          table: 'photos',
+          filter: `session_id=eq.${session.id}`,
+        },
+        (payload) => {
+          const deleted = payload.old as { id?: string };
+          if (!deleted?.id) return;
+          setPhotos((prev) => prev.filter((p) => p.id !== deleted.id));
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'sessions',
+          filter: `id=eq.${session.id}`,
+        },
+        (payload) => {
+          const updated = payload.new as Session;
+          if (!updated?.id) return;
+          setSession((prev) => (prev ? { ...prev, ...updated } : updated));
+          const stillActive = updated.is_active !== false && !updated.ended_at;
+          setIsLive(stillActive);
+        }
+      )
       .subscribe((status) => {
-        setIsLive(status === 'SUBSCRIBED');
+        if (session.is_active === false || session.ended_at) {
+          setIsLive(false);
+        } else {
+          setIsLive(status === 'SUBSCRIBED');
+        }
       });
 
     return () => {
@@ -425,6 +486,8 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
     return <ShotDropLoadingSkeleton hash={hash} />;
   }
 
+  const isSessionEnded =
+    session?.is_active === false || Boolean(session?.ended_at);
   const activeHash = session?.qr_code_hash || hash;
 
   return (
@@ -450,14 +513,23 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
                       ? `Phiên chụp #${activeHash}`
                       : 'ShotDropVN Live')}
                 </h1>
-                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 shrink-0">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-ping" />
-                  {isLive ? 'Live' : 'Đồng bộ'}
-                </span>
+                {isSessionEnded ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold bg-stone-100 text-stone-600 border border-stone-200 shrink-0">
+                    <span className="w-1.5 h-1.5 rounded-full bg-stone-400" />
+                    Đã kết thúc
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 shrink-0">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-ping" />
+                    {isLive ? 'Live' : 'Đồng bộ'}
+                  </span>
+                )}
               </div>
               {activeHash && (
                 <p className="text-[11px] font-medium text-stone-600 truncate">
-                  Mã phiên #{activeHash} • Ảnh gốc tự động cập nhật
+                  {isSessionEnded
+                    ? `Mã phiên #${activeHash} • Phiên chụp đã kết thúc`
+                    : `Mã phiên #${activeHash} • Ảnh gốc tự động cập nhật`}
                 </p>
               )}
             </div>
@@ -515,11 +587,38 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
       <main className="max-w-6xl mx-auto px-3 sm:px-6 py-4 pb-16">
         {photos.length === 0 ? (
           <div className="py-20 px-4 rounded-2xl bg-white border border-stone-200/90 shadow-2xs text-center flex flex-col items-center justify-center gap-3 mt-2">
-            <ShotDropLogoSpinner
-              size="lg"
-              label="Loading Live Photos"
-              sublabel="Đang chờ ảnh mới đẩy lên từ cáp USB OTG hoặc Canon Connect trên điện thoại..."
-            />
+            {isSessionEnded ? (
+              <div className="flex flex-col items-center max-w-sm text-center py-4">
+                <div className="w-12 h-12 rounded-2xl bg-stone-100 flex items-center justify-center text-stone-500 mb-3 border border-stone-200">
+                  <svg
+                    className="w-6 h-6 text-stone-500"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M5 13l4 4L19 7"
+                    />
+                  </svg>
+                </div>
+                <h2 className="text-base font-bold text-stone-900">
+                  Phiên chụp đã kết thúc
+                </h2>
+                <p className="text-xs text-stone-600 mt-1">
+                  Phiên chụp này hiện không có ảnh lưu trữ hoặc đã kết thúc.
+                </p>
+              </div>
+            ) : (
+              <ShotDropLogoSpinner
+                size="lg"
+                label="Loading Live Photos"
+                sublabel="Đang chờ ảnh mới đẩy lên từ cáp USB OTG hoặc Canon Connect trên điện thoại..."
+              />
+            )}
           </div>
         ) : (
           <div

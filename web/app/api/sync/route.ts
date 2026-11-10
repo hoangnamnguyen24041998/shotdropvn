@@ -8,6 +8,8 @@ export interface StoredSession {
   event_name: string;
   qr_code_hash: string;
   created_at: string;
+  is_active?: boolean;
+  ended_at?: string;
 }
 
 export interface StoredPhoto {
@@ -70,7 +72,7 @@ export async function GET(request: NextRequest) {
 
   const session = hash
     ? store.sessions.find((s) => s.qr_code_hash.toLowerCase() === hash) ?? null
-    : store.sessions[0] ?? null;
+    : store.sessions.find((s) => s.is_active !== false) ?? store.sessions[0] ?? null;
 
   if (!session) {
     return NextResponse.json(
@@ -95,7 +97,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as {
-      action: 'create_session' | 'upload_photo' | 'delete_photos';
+      action: 'create_session' | 'upload_photo' | 'delete_photos' | 'end_session';
       event_name?: string;
       qr_code_hash?: string;
       session_id?: string;
@@ -117,6 +119,9 @@ export async function POST(request: NextRequest) {
         (s) => s.qr_code_hash.toLowerCase() === qrHash
       );
       if (existing) {
+        existing.is_active = true;
+        existing.ended_at = undefined;
+        await writeStore(store);
         return NextResponse.json({ session: existing }, { headers: corsHeaders });
       }
 
@@ -125,6 +130,7 @@ export async function POST(request: NextRequest) {
         event_name: body.event_name || `Canon 6D Live #${qrHash}`,
         qr_code_hash: qrHash,
         created_at: new Date().toISOString(),
+        is_active: true,
       };
 
       store.sessions.unshift(newSession);
@@ -132,6 +138,27 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json(
         { session: newSession },
+        { headers: corsHeaders }
+      );
+    }
+
+    if (body.action === 'end_session') {
+      const qrHash = body.qr_code_hash?.toLowerCase();
+      let matched = false;
+      store.sessions.forEach((s) => {
+        if (
+          !body.session_id && !qrHash ? true :
+          s.id === body.session_id ||
+          (qrHash && s.qr_code_hash.toLowerCase() === qrHash)
+        ) {
+          s.is_active = false;
+          s.ended_at = new Date().toISOString();
+          matched = true;
+        }
+      });
+      await writeStore(store);
+      return NextResponse.json(
+        { success: true, ended: matched },
         { headers: corsHeaders }
       );
     }

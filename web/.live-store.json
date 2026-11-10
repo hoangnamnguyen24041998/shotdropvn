@@ -4,19 +4,25 @@
       "id": "sess-1794221028287-darylq",
       "event_name": "Canon 6D Live • 17:43",
       "qr_code_hash": "darylq",
-      "created_at": "2026-11-09T10:43:48.287Z"
+      "created_at": "2026-11-09T10:43:48.287Z",
+      "is_active": false,
+      "ended_at": "2026-11-09T11:00:00.000Z"
     },
     {
       "id": "sess-1794215232825-x951m2",
       "event_name": "Canon 6D Live • 16:07",
       "qr_code_hash": "x951m2",
-      "created_at": "2026-11-09T09:07:12.825Z"
+      "created_at": "2026-11-09T09:07:12.825Z",
+      "is_active": false,
+      "ended_at": "2026-11-09T10:00:00.000Z"
     },
     {
       "id": "sess-1794210477170-950n8b",
       "event_name": "Canon 6D Live • 14:47",
       "qr_code_hash": "950n8b",
-      "created_at": "2026-11-09T07:47:57.170Z"
+      "created_at": "2026-11-09T07:47:57.170Z",
+      "is_active": false,
+      "ended_at": "2026-11-09T08:30:00.000Z"
     }
   ],
   "photos": [
