@@ -136,6 +136,38 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (body.action === 'end_session') {
+      const qrHash = body.qr_code_hash?.toLowerCase();
+      const targetSession = store.sessions.find(
+        (s) =>
+          s.id === body.session_id ||
+          (qrHash && s.qr_code_hash.toLowerCase() === qrHash)
+      );
+
+      const targetSessionId = targetSession?.id || body.session_id;
+
+      // Completely remove the session row from store
+      store.sessions = store.sessions.filter(
+        (s) =>
+          s.id !== targetSessionId &&
+          (!qrHash || s.qr_code_hash.toLowerCase() !== qrHash)
+      );
+
+      // Completely remove all photos belonging to this session
+      if (targetSessionId) {
+        store.photos = store.photos.filter(
+          (p) => p.session_id !== targetSessionId
+        );
+      }
+
+      await writeStore(store);
+
+      return NextResponse.json(
+        { success: true, cleared: true },
+        { headers: corsHeaders }
+      );
+    }
+
     if (body.action === 'upload_photo') {
       const remoteImageUrl = body.image_url?.trim();
       if (!body.base64 && !remoteImageUrl) {
