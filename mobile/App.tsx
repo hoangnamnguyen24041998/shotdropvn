@@ -19,7 +19,6 @@ import { usePhotoSync } from './src/hooks/usePhotoSync';
 import { AppHeader } from './src/components/AppHeader';
 import { QrStudioDeck } from './src/components/QrStudioDeck';
 import { OtgTetherConsole } from './src/components/OtgTetherConsole';
-import { PhotoGridHeader } from './src/components/PhotoGridHeader';
 import { PhotoTile } from './src/components/PhotoTile';
 import { EmptyPhotoView } from './src/components/EmptyPhotoView';
 import { SelectionFloatingBar } from './src/components/SelectionFloatingBar';
@@ -30,8 +29,8 @@ import { ToastBanner } from './src/components/ToastBanner';
 // Styles
 import { styles } from './src/styles/appStyles';
 
-export const APP_VERSION = '1.2.4';
-export const APP_BUILD = 7;
+export const APP_VERSION = '1.2.5';
+export const APP_BUILD = 8;
 
 export default function App() {
   const { toast, showToast } = useToast();
@@ -269,7 +268,6 @@ export default function App() {
             {/* 1. Live QR Studio Deck */}
             <QrStudioDeck
               activeSession={activeSession}
-              sessionPhotosCount={sessionPhotosCount}
               webOrigin={webOrigin}
               pulseAnim={pulseAnim}
               uploading={uploading}
@@ -287,16 +285,6 @@ export default function App() {
               onToggleOtgLive={() => setIsOtgLiveEnabled((prev) => !prev)}
               onConnectOtg={handleConnectUsbOtgCamera}
               onPullLatestPhotos={handlePullLatestFromOtgCard}
-            />
-
-            {/* 3. Grid Header & Quick Filter Chips */}
-            <PhotoGridHeader
-              totalCount={recentPhotos.length}
-              uploadedCount={uploadedPhotoIds.length}
-              selectedCount={selectedPhotoIds.length}
-              onSelectAllUploaded={handleSelectAllUploaded}
-              onSelectAll={handleSelectAll}
-              onClearSelection={clearSelection}
             />
           </View>
         }

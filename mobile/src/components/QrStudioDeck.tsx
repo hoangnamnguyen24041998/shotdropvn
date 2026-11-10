@@ -21,7 +21,7 @@ import type { ActiveSession } from '../types';
 
 interface QrStudioDeckProps {
   activeSession: ActiveSession | null;
-  sessionPhotosCount: number;
+  sessionPhotosCount?: number;
   webOrigin: string;
   pulseAnim: Animated.Value;
   uploading: boolean;
@@ -32,7 +32,6 @@ interface QrStudioDeckProps {
 
 export const QrStudioDeck: React.FC<QrStudioDeckProps> = ({
   activeSession,
-  sessionPhotosCount,
   webOrigin,
   pulseAnim,
   uploading,
@@ -61,23 +60,10 @@ export const QrStudioDeck: React.FC<QrStudioDeckProps> = ({
     <View style={styles.sessionCard}>
       {activeSession ? (
         <View style={styles.activeSessionBox}>
-          <View style={styles.sessionTopRow}>
-            <View style={styles.sessionIdentityCol}>
-              <View style={styles.sessionTitleRow}>
-                <Text style={styles.sessionHashText}>
-                  #{activeSession.qr_code_hash}
-                </Text>
-                <View style={styles.liveTagPill}>
-                  <View style={styles.dotLiveSmall} />
-                  <Text style={styles.liveTagText}>ĐANG PHÁT</Text>
-                </View>
-              </View>
-            </View>
-
-            <View style={styles.counterBox}>
-              <Text style={styles.counterValue}>{sessionPhotosCount}</Text>
-              <Text style={styles.counterLabel}>ảnh trên Web</Text>
-            </View>
+          <View style={[styles.sessionTopRow, { justifyContent: 'center', marginBottom: 14 }]}>
+            <Text style={styles.sessionHashText}>
+              #{activeSession.qr_code_hash}
+            </Text>
           </View>
 
           {/* Precision QR Viewfinder Frame */}
