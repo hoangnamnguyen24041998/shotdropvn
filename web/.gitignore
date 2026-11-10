@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Guides & AI files
+AGENTS.md
+CLAUDE.md
+ICON_GUIDE.md
+.claude/
