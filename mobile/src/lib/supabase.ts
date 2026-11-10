@@ -2,7 +2,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 export const SUPABASE_PROJECT_URL =
   process.env.EXPO_PUBLIC_SUPABASE_URL?.trim() ||
-  'https://offobwrujfirkjllvvps.supabase.co';
+  'https://larjhgvrctokpwfhrlpc.supabase.co';
 
 const envAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY?.trim() ?? '';
 
@@ -70,7 +70,7 @@ export const STORAGE_BUCKET = 'shotdrop_photos';
 export const RENDER_WEB_URL = 'https://shotdropvn-web.onrender.com';
 
 export const PUBLIC_CLOUDFLARE_WEB_URL =
-  'https://delicious-compression-lived-agriculture.trycloudflare.com';
+  'https://supreme-cape-representations-automation.trycloudflare.com';
 
 function resolveDefaultWebOrigin(): string {
   const envUrl = process.env.EXPO_PUBLIC_WEB_URL?.trim();

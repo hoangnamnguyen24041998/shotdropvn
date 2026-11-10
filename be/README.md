@@ -21,10 +21,10 @@ be/
 
 ## ⚡ Supabase Project Information
 
-- **Project Ref**: `offobwrujfirkjllvvps`
-- **Project URL**: `https://offobwrujfirkjllvvps.supabase.co`
-- **Dashboard**: [https://supabase.com/dashboard/project/offobwrujfirkjllvvps](https://supabase.com/dashboard/project/offobwrujfirkjllvvps)
-- **Database**: PostgreSQL 17 (ap-southeast-2)
+- **Project Ref**: `larjhgvrctokpwfhrlpc`
+- **Project URL**: `https://larjhgvrctokpwfhrlpc.supabase.co`
+- **Dashboard**: [https://supabase.com/dashboard/project/larjhgvrctokpwfhrlpc](https://supabase.com/dashboard/project/larjhgvrctokpwfhrlpc)
+- **Database**: PostgreSQL 17 (ap-northeast-2)
 - **Storage Bucket**: `shotdrop_photos` (Public: `true`, Max Size: 20MB, Types: JPEG/PNG/WebP/HEIC)
 
 ---
