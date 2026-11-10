@@ -40,3 +40,8 @@ yarn-error.*
 /ios
 /android
 yarn.lock
+
+.env
+AGENTS.md
+CLAUDE.md
+ICON_GUIDE.md
