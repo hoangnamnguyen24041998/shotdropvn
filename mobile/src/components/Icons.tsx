@@ -376,3 +376,22 @@ export function QrViewfinderIcon({
     </Svg>
   );
 }
+
+export function SettingsSlidersIcon({
+  size = iconSizes.md,
+  color = colors.textPrimary,
+  strokeWidth = 1.9,
+}: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
