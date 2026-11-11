@@ -14,7 +14,6 @@ import {
   CloseIcon,
   SparklesIcon,
   TrashIcon,
-  UploadArrowIcon,
 } from './Icons';
 import { styles } from '../styles/appStyles';
 import { colors } from '../theme/tokens';
@@ -42,9 +41,7 @@ interface SelectionMenuModalProps {
 export const SelectionMenuModal: React.FC<SelectionMenuModalProps> = ({
   visible,
   selectedPhotoIds,
-  uploadedPhotoIds,
   recentPhotos,
-  activeSession,
   uploading,
   popupPan,
   popupScaleAnim,
@@ -52,16 +49,15 @@ export const SelectionMenuModal: React.FC<SelectionMenuModalProps> = ({
   onClose,
   onToggleSelectPhoto,
   onSelectAll,
-  onSelectAllUploaded,
   onClearSelection,
   onUploadSelected,
   onDeleteSelected,
 }) => {
   if (!visible) return null;
 
-  const selectedUploadedCount = selectedPhotoIds.filter((id) =>
-    uploadedPhotoIds.includes(id)
-  ).length;
+  const selectedPhotos = recentPhotos.filter((item) =>
+    selectedPhotoIds.includes(item.id)
+  );
 
   return (
     <Modal
@@ -103,12 +99,10 @@ export const SelectionMenuModal: React.FC<SelectionMenuModalProps> = ({
 
                 <View style={styles.selectionTitleCol}>
                   <Text style={styles.centerModalTitle}>
-                    Đã chọn {selectedPhotoIds.length} ảnh
+                    Đã chọn {selectedPhotos.length} ảnh
                   </Text>
                   <Text style={styles.centerModalSubtitle} numberOfLines={1}>
-                    {selectedUploadedCount > 0
-                      ? `Có ${selectedUploadedCount} ảnh đã lên Web`
-                      : 'Sẵn sàng đẩy lên mã QR hoặc xoá'}
+                    Tách sang mã QR mới hoặc xoá khỏi phiên
                   </Text>
                 </View>
               </View>
@@ -126,70 +120,61 @@ export const SelectionMenuModal: React.FC<SelectionMenuModalProps> = ({
               </Pressable>
             </View>
 
-            {/* Horizontal Scrollable Photo Strip */}
+            {/* Horizontal Scrollable Selected Photo Strip */}
             <View style={styles.centerStripSection}>
               <View style={styles.centerStripHeaderRow}>
                 <Text style={styles.centerStripLabel}>
-                  Chạm vào ảnh bên dưới để chọn / bỏ chọn nhanh:
+                  Danh sách ảnh đã chọn ({selectedPhotos.length}) • Chạm để bỏ chọn:
                 </Text>
               </View>
 
               <FlatList
-                data={recentPhotos}
+                data={selectedPhotos}
                 keyExtractor={(item) => `modal-${item.id}`}
                 horizontal
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.centerStripList}
-                renderItem={({ item }) => {
-                  const isItemSelected = selectedPhotoIds.includes(item.id);
-                  const isItemUploaded = uploadedPhotoIds.includes(item.id);
-
-                  return (
-                    <Pressable
-                      onPress={() => onToggleSelectPhoto(item.id)}
+                renderItem={({ item }) => (
+                  <Pressable
+                    onPress={() => onToggleSelectPhoto(item.id)}
+                    style={[
+                      styles.centerStripThumbWrap,
+                      styles.centerStripThumbSelected,
+                    ]}
+                  >
+                    <Image
+                      source={{ uri: item.uri }}
+                      style={styles.centerStripThumbImg}
+                    />
+                    <View
                       style={[
-                        styles.centerStripThumbWrap,
-                        isItemSelected && styles.centerStripThumbSelected,
+                        styles.centerStripCheckBadge,
+                        styles.centerStripCheckBadgeActive,
                       ]}
                     >
-                      <Image
-                        source={{ uri: item.uri }}
-                        style={styles.centerStripThumbImg}
-                      />
-                      {isItemUploaded && (
-                        <View style={styles.centerStripLiveDot} />
-                      )}
-                      <View
-                        style={[
-                          styles.centerStripCheckBadge,
-                          isItemSelected &&
-                            styles.centerStripCheckBadgeActive,
-                        ]}
-                      >
-                        {isItemSelected && (
-                          <CheckIcon size={10} color={colors.textInverse} />
-                        )}
-                      </View>
-                    </Pressable>
-                  );
-                }}
+                      <CheckIcon size={10} color={colors.textInverse} />
+                    </View>
+                  </Pressable>
+                )}
               />
             </View>
 
             {/* Quick Filter Chips */}
             <View style={styles.expandedQuickSelectRow}>
-              <Pressable
-                onPress={onSelectAll}
-                style={({ pressed }) => [
-                  styles.expandedChipBtn,
-                  pressed && styles.subtlePressed,
-                ]}
-              >
-                <CheckIcon size={12} color={colors.textPrimary} />
-                <Text style={styles.expandedChipBtnText}>
-                  Chọn tất cả ({recentPhotos.length})
-                </Text>
-              </Pressable>
+              {selectedPhotos.length < recentPhotos.length && (
+                <Pressable
+                  onPress={onSelectAll}
+                  style={({ pressed }) => [
+                    styles.expandedChipBtn,
+                    pressed && styles.subtlePressed,
+                  ]}
+                >
+                  <CheckIcon size={12} color={colors.textPrimary} />
+                  <Text style={styles.expandedChipBtnText}>
+                    Chọn tất cả ({recentPhotos.length})
+                  </Text>
+                </Pressable>
+              )}
 
               <Pressable
                 onPress={onClose}

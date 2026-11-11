@@ -29,8 +29,8 @@ import { ToastBanner } from './src/components/ToastBanner';
 // Styles
 import { styles } from './src/styles/appStyles';
 
-export const APP_VERSION = '1.2.6';
-export const APP_BUILD = 9;
+export const APP_VERSION = '1.2.7';
+export const APP_BUILD = 10;
 
 export default function App() {
   const { toast, showToast } = useToast();
@@ -219,9 +219,6 @@ export default function App() {
 
   const handleToggleSelectPhoto = (id: string) => {
     toggleSelectPhoto(id);
-    if (!selectedPhotoIds.includes(id) && selectedPhotoIds.length === 0) {
-      setIsSelectionMenuExpanded(true);
-    }
   };
 
   const handleUploadSelected = async (forceNewSession = false) => {
@@ -323,9 +320,13 @@ export default function App() {
         }
       />
 
-      {/* Floating Pill Bar when selection modal is minimized */}
+      {/* Floating Selection Toast Bar (hidden while modal is open) */}
       <SelectionFloatingBar
+        visible={selectedPhotoIds.length > 0 && !isSelectionMenuExpanded}
         selectedCount={selectedPhotoIds.length}
+        totalCount={recentPhotos.length}
+        onSelectAll={handleSelectAll}
+        onClearSelection={clearSelection}
         onExpand={() => {
           snapPopupTo(0, 0);
           setIsSelectionMenuExpanded(true);
