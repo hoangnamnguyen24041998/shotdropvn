@@ -1,10 +1,16 @@
 import { NativeModules, Platform } from 'react-native';
 
+export const USB_OTG_CHANGED_EVENT = 'ShotDropUsbOtgChanged';
+
 export interface UsbCameraStatus {
   connected: boolean;
+  usbAttached?: boolean;
   status:
     | 'CONNECTED'
     | 'REQUESTING_PERMISSION'
+    | 'PERMISSION_DENIED'
+    | 'HUB_ONLY'
+    | 'MASS_STORAGE'
     | 'NO_USB_DEVICE'
     | 'NO_USB_SERVICE'
     | 'OPEN_FAILED'
@@ -13,6 +19,7 @@ export interface UsbCameraStatus {
     | 'ERROR';
   deviceName: string | null;
   totalPhotosOnCard: number;
+  diagnosticInfo?: string;
   error?: string;
 }
 
@@ -23,9 +30,18 @@ export interface ImportedOtgPhoto {
   creationTime: number;
 }
 
+export interface SyncUsbCameraResult {
+  status: UsbCameraStatus;
+  newPhotos: ImportedOtgPhoto[];
+}
+
 interface ShotDropUsbOtgNativeModule {
   scanAndConnectCamera(): Promise<UsbCameraStatus>;
   pollNewPhotosFromCamera(fetchRecentCount: number): Promise<ImportedOtgPhoto[]>;
+  syncUsbCamera?(
+    manualRequest: boolean,
+    fetchRecentCount: number
+  ): Promise<SyncUsbCameraResult>;
 }
 
 const NativeUsbOtg = NativeModules.ShotDropUsbOtg as
@@ -35,27 +51,69 @@ const NativeUsbOtg = NativeModules.ShotDropUsbOtg as
 export const isNativeUsbOtgAvailable =
   Platform.OS === 'android' && Boolean(NativeUsbOtg);
 
-export async function scanAndConnectUsbCamera(): Promise<UsbCameraStatus> {
+const UNSUPPORTED_STATUS: UsbCameraStatus = {
+  connected: false,
+  usbAttached: false,
+  status: 'UNSUPPORTED_PLATFORM',
+  deviceName: null,
+  totalPhotosOnCard: 0,
+};
+
+export async function syncUsbCamera(options?: {
+  manualRequest?: boolean;
+  fetchRecentCount?: number;
+}): Promise<SyncUsbCameraResult> {
   if (Platform.OS !== 'android' || !NativeUsbOtg) {
-    return {
-      connected: false,
-      status: 'UNSUPPORTED_PLATFORM',
-      deviceName: null,
-      totalPhotosOnCard: 0,
-    };
+    return { status: UNSUPPORTED_STATUS, newPhotos: [] };
   }
 
+  const manualRequest = options?.manualRequest ?? false;
+  const fetchRecentCount = options?.fetchRecentCount ?? -1;
+
   try {
-    return await NativeUsbOtg.scanAndConnectCamera();
+    if (typeof NativeUsbOtg.syncUsbCamera === 'function') {
+      const result = await NativeUsbOtg.syncUsbCamera(
+        manualRequest,
+        fetchRecentCount
+      );
+      return {
+        status: result?.status ?? UNSUPPORTED_STATUS,
+        newPhotos: Array.isArray(result?.newPhotos) ? result.newPhotos : [],
+      };
+    }
+
+    const status = await NativeUsbOtg.scanAndConnectCamera();
+    if (!status.connected || fetchRecentCount < 0) {
+      return { status, newPhotos: [] };
+    }
+    const items = await NativeUsbOtg.pollNewPhotosFromCamera(fetchRecentCount);
+    return {
+      status,
+      newPhotos: Array.isArray(items) ? items : [],
+    };
   } catch (err) {
     return {
-      connected: false,
-      status: 'ERROR',
-      deviceName: null,
-      totalPhotosOnCard: 0,
-      error: err instanceof Error ? err.message : 'Lỗi kết nối USB OTG',
+      status: {
+        connected: false,
+        usbAttached: false,
+        status: 'ERROR',
+        deviceName: null,
+        totalPhotosOnCard: 0,
+        error: err instanceof Error ? err.message : 'Lỗi kết nối USB OTG',
+      },
+      newPhotos: [],
     };
   }
+}
+
+export async function scanAndConnectUsbCamera(
+  manualRequest = true
+): Promise<UsbCameraStatus> {
+  const { status } = await syncUsbCamera({
+    manualRequest,
+    fetchRecentCount: -1,
+  });
+  return status;
 }
 
 export async function pollNewUsbCameraPhotos(

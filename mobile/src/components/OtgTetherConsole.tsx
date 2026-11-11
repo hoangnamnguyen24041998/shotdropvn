@@ -12,25 +12,122 @@ import type { UsbCameraStatus } from '../types';
 interface OtgTetherConsoleProps {
   usbCameraStatus: UsbCameraStatus;
   isOtgLiveEnabled: boolean;
+  otgDirectoryUri: string | null;
   uploading: boolean;
   statusMessage: string;
   onToggleOtgLive: () => void;
   onConnectOtg: () => void;
+  onSelectOtgFolder: () => void;
   onPullLatestPhotos: (count: number) => void;
 }
 
 export const OtgTetherConsole: React.FC<OtgTetherConsoleProps> = ({
   usbCameraStatus,
   isOtgLiveEnabled,
+  otgDirectoryUri,
   uploading,
   statusMessage,
   onToggleOtgLive,
   onConnectOtg,
+  onSelectOtgFolder,
   onPullLatestPhotos,
 }) => {
-  // Requirement: Only show OTG Tether UI when USB OTG is physically connected
-  if (!usbCameraStatus.connected) {
+  // Only render OTG console when a physical USB device / Hub / camera / SAF OTG folder is present
+  const hasUsbActivity =
+    usbCameraStatus.connected ||
+    Boolean(usbCameraStatus.usbAttached) ||
+    Boolean(otgDirectoryUri) ||
+    (usbCameraStatus.status !== 'NO_USB_DEVICE' &&
+      usbCameraStatus.status !== 'UNSUPPORTED_PLATFORM');
+
+  if (!hasUsbActivity) {
     return null;
+  }
+
+  // Pending / Hub-only / Mass-storage / Error state while physical USB OTG hardware is plugged in
+  if (!usbCameraStatus.connected) {
+    let headline = `Phát hiện USB OTG • ${usbCameraStatus.deviceName ?? 'Thiết bị'}`;
+    let subtext =
+      usbCameraStatus.error ||
+      'Nhấn nút bên dưới để cấp quyền và kết nối máy ảnh qua cáp USB OTG.';
+
+    if (
+      usbCameraStatus.status === 'REQUESTING_PERMISSION' ||
+      usbCameraStatus.status === 'PERMISSION_DENIED'
+    ) {
+      headline = `Chờ cấp quyền USB • ${usbCameraStatus.deviceName ?? 'Máy ảnh'}`;
+      subtext =
+        'Hãy bấm "Cho phép" (OK) trên hộp thoại hệ thống Android, hoặc nhấn Cấp quyền & Kết nối OTG bên dưới.';
+    } else if (usbCameraStatus.status === 'HUB_ONLY') {
+      headline = `Đã nhận Hub Type-C • Chưa thấy máy ảnh`;
+      subtext =
+        `Android đã nhận ${usbCameraStatus.deviceName ?? 'Hub Type-C'}, nhưng chưa thấy máy ảnh qua cáp Mini-USB.\n` +
+        '1. Bật nguồn máy ảnh.\n' +
+        '2. Tắt Wi-Fi trong menu máy ảnh (Canon khóa cổng USB khi bật Wi-Fi).\n' +
+        '3. Đảm bảo cáp Mini-USB truyền được dữ liệu (không phải cáp chỉ sạc).';
+    } else if (usbCameraStatus.status === 'MASS_STORAGE' || otgDirectoryUri) {
+      headline = otgDirectoryUri
+        ? 'Đang theo dõi thư mục thẻ nhớ OTG (SAF)'
+        : `Phát hiện bộ nhớ USB • ${usbCameraStatus.deviceName ?? 'Thẻ nhớ'}`;
+      subtext = otgDirectoryUri
+        ? 'Ảnh JPEG mới xuất hiện trong thư mục OTG đã chọn sẽ tự động upload lên QR.'
+        : 'Nếu máy ảnh ở chế độ Mass Storage hoặc cắm đầu đọc thẻ qua Hub, hãy chọn thư mục DCIM trên thẻ để đồng bộ tự động.';
+    }
+
+    return (
+      <View style={[styles.tetherConsole, styles.tetherConsoleWarning]}>
+        <View style={styles.otgHeaderRow}>
+          <View style={styles.otgTitleCol}>
+            <View style={styles.otgStatusHeadlineRow}>
+              <View style={[styles.statusDot, styles.dotWarning]} />
+              <Text style={styles.otgHeadline} numberOfLines={1}>
+                {headline}
+              </Text>
+            </View>
+            <Text style={styles.otgSubtext}>{subtext}</Text>
+            {Boolean(usbCameraStatus.diagnosticInfo) && (
+              <Text style={styles.otgDiagnosticText} numberOfLines={2}>
+                {`USB: ${usbCameraStatus.diagnosticInfo}`}
+              </Text>
+            )}
+          </View>
+        </View>
+
+        <View style={styles.otgActionButtonsRow}>
+          <Pressable
+            onPress={onConnectOtg}
+            disabled={uploading}
+            accessibilityRole="button"
+            style={({ pressed }) => [
+              styles.otgPrimaryBtn,
+              { backgroundColor: colors.accent },
+              pressed && styles.primaryPressed,
+            ]}
+          >
+            <UsbCableIcon size={16} color={colors.textInverse} />
+            <Text style={styles.otgPrimaryBtnText}>
+              {usbCameraStatus.status === 'REQUESTING_PERMISSION' ||
+              usbCameraStatus.status === 'PERMISSION_DENIED'
+                ? 'Cấp quyền & Kết nối OTG'
+                : 'Quét lại OTG'}
+            </Text>
+          </Pressable>
+
+          <Pressable
+            onPress={onSelectOtgFolder}
+            disabled={uploading}
+            accessibilityRole="button"
+            style={({ pressed }) => [
+              styles.otgSecondaryBtn,
+              pressed && styles.subtlePressed,
+            ]}
+          >
+            <DownloadTrayIcon size={16} color={colors.textPrimary} />
+            <Text style={styles.otgSecondaryBtnText}>Chọn thư mục OTG</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
   }
 
   return (
@@ -112,10 +209,6 @@ export const OtgTetherConsole: React.FC<OtgTetherConsoleProps> = ({
       <View style={styles.consoleStatusFooter}>
         <Text style={styles.statusLineText} numberOfLines={2}>
           {statusMessage}
-        </Text>
-        <Text style={styles.hintLineText}>
-          Chạm để chọn nhiều ảnh hoặc nhấn giữ vào ảnh để hiện nút Upload tiếp /
-          Xoá nhanh.
         </Text>
       </View>
     </View>

@@ -391,6 +391,16 @@ export const styles = StyleSheet.create({
     borderColor: colors.live,
     backgroundColor: '#F6FEF9',
   },
+  tetherConsoleWarning: {
+    borderColor: colors.warning,
+    backgroundColor: '#FFFBEB',
+  },
+  otgDiagnosticText: {
+    fontSize: 11,
+    color: colors.textMuted,
+    fontFamily: Platform.OS === 'android' ? 'monospace' : 'Menlo',
+    marginTop: 2,
+  },
   otgHeaderRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',

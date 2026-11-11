@@ -10,8 +10,7 @@ import {
 } from '../lib/supabase';
 import {
   isNativeUsbOtgAvailable,
-  pollNewUsbCameraPhotos,
-  scanAndConnectUsbCamera,
+  syncUsbCamera,
   type UsbCameraStatus,
 } from '../lib/usbOtg';
 import { SupabaseNotConfiguredError } from './useActiveSession';
@@ -84,6 +83,7 @@ export function usePhotoSync({
     new Map()
   );
   const knownSafFilesSetRef = useRef<Set<string>>(new Set());
+  const seededOtgDirectoryRef = useRef<string | null>(null);
   const isOtgPollingRef = useRef<boolean>(false);
 
   useEffect(() => {
@@ -409,11 +409,15 @@ export function usePhotoSync({
       setStatusMessage(
         `Đang đọc ${count} ảnh mới nhất từ thẻ nhớ máy ảnh qua cáp OTG...`
       );
-      const imported = await pollNewUsbCameraPhotos(count);
+      const { status, newPhotos: imported } = await syncUsbCamera({
+        manualRequest: true,
+        fetchRecentCount: count,
+      });
+      setUsbCameraStatus(status);
       if (imported.length === 0) {
         Alert.alert(
           'Không tìm thấy ảnh JPEG trên máy ảnh',
-          'Hãy kiểm tra máy ảnh đã bật nguồn, cắm cáp OTG chắc chắn và chụp ở định dạng JPEG.'
+          'Hãy kiểm tra máy ảnh đã bật nguồn, tắt Wi-Fi máy ảnh (nếu có), cắm cáp OTG chắc chắn và chụp ở định dạng JPEG.'
         );
         return;
       }
@@ -427,7 +431,7 @@ export function usePhotoSync({
 
       await uploadPhotosBatch(items);
     },
-    [uploadPhotosBatch]
+    [setUsbCameraStatus, uploadPhotosBatch]
   );
 
   // Continuous background polling strictly for physical USB OTG camera / SAF folder
@@ -440,22 +444,22 @@ export function usePhotoSync({
 
       try {
         if (isNativeUsbOtgAvailable) {
-          const status = await scanAndConnectUsbCamera();
+          const { status, newPhotos } = await syncUsbCamera({
+            manualRequest: false,
+            fetchRecentCount: 0,
+          });
           setUsbCameraStatus(status);
 
-          if (status.connected) {
-            const newOtgPhotos = await pollNewUsbCameraPhotos(0);
-            if (newOtgPhotos.length > 0) {
-              const newItems: LocalPhotoItem[] = newOtgPhotos.map((p) => ({
-                id: p.id,
-                uri: p.uri,
-                filename: p.filename,
-                creationTime: p.creationTime,
-              }));
+          if (status.connected && newPhotos.length > 0) {
+            const newItems: LocalPhotoItem[] = newPhotos.map((p) => ({
+              id: p.id,
+              uri: p.uri,
+              filename: p.filename,
+              creationTime: p.creationTime,
+            }));
 
-              await uploadPhotosBatch(newItems);
-              return;
-            }
+            await uploadPhotosBatch(newItems);
+            return;
           }
         }
 
@@ -465,10 +469,19 @@ export function usePhotoSync({
               await FileSystem.StorageAccessFramework.readDirectoryAsync(
                 otgDirectoryUri
               );
-            const newSafFiles = files.filter(
-              (f) =>
-                /\.(jpe?g)$/i.test(decodeURIComponent(f)) &&
-                !knownSafFilesSetRef.current.has(f)
+            const jpegFiles = files.filter((f) =>
+              /\.(jpe?g)$/i.test(decodeURIComponent(f))
+            );
+
+            // Establish baseline for newly selected SAF folder so only freshly shot photos upload automatically
+            if (seededOtgDirectoryRef.current !== otgDirectoryUri) {
+              seededOtgDirectoryRef.current = otgDirectoryUri;
+              knownSafFilesSetRef.current = new Set(jpegFiles);
+              return;
+            }
+
+            const newSafFiles = jpegFiles.filter(
+              (f) => !knownSafFilesSetRef.current.has(f)
             );
 
             if (newSafFiles.length > 0) {

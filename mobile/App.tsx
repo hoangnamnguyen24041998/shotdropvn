@@ -29,8 +29,8 @@ import { ToastBanner } from './src/components/ToastBanner';
 // Styles
 import { styles } from './src/styles/appStyles';
 
-export const APP_VERSION = '1.2.8';
-export const APP_BUILD = 11;
+export const APP_VERSION = '1.2.9';
+export const APP_BUILD = 12;
 
 export default function App() {
   const { toast, showToast } = useToast();
@@ -46,6 +46,7 @@ export default function App() {
     setIsOtgLiveEnabled,
     otgDirectoryUri,
     handleConnectUsbOtgCamera,
+    handleSelectOtgFolder,
   } = useUsbCamera({
     onStatusMessage: (msg) => showToast('info', msg),
   });
@@ -273,14 +274,16 @@ export default function App() {
               onEndSession={handleEndSession}
             />
 
-            {/* 2. USB OTG Tether Console (ONLY rendered when USB OTG is physically connected) */}
+            {/* 2. USB OTG Tether Console (ONLY rendered when USB OTG / Hub / Camera / SAF folder is present) */}
             <OtgTetherConsole
               usbCameraStatus={usbCameraStatus}
               isOtgLiveEnabled={isOtgLiveEnabled}
+              otgDirectoryUri={otgDirectoryUri}
               uploading={uploading}
               statusMessage={statusMessage}
               onToggleOtgLive={() => setIsOtgLiveEnabled((prev) => !prev)}
               onConnectOtg={handleConnectUsbOtgCamera}
+              onSelectOtgFolder={handleSelectOtgFolder}
               onPullLatestPhotos={handlePullLatestFromOtgCard}
             />
           </View>
