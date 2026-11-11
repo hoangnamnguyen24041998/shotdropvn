@@ -48,6 +48,7 @@ export function useActiveSession(options?: {
 }) {
   const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
   const activeSessionRef = useRef<ActiveSession | null>(activeSession);
+  const creatingSessionPromiseRef = useRef<Promise<ActiveSession> | null>(null);
 
   // Web Origin Configuration
   const [webOrigin, setWebOrigin] = useState<string>(GUEST_WEB_ORIGIN);
@@ -172,55 +173,72 @@ export function useActiveSession(options?: {
         return activeSessionRef.current;
       }
 
-      const newQrHash = generateQrHash();
-      const eventTitle = `Phiên chụp #${newQrHash}`;
-
-      let createdSession: ActiveSession = {
-        id: `sess-${Date.now()}-${newQrHash}`,
-        event_name: eventTitle,
-        qr_code_hash: newQrHash,
-        created_at: new Date().toISOString(),
-      };
-
-      if (!isSupabaseReady()) {
-        throw new SupabaseNotConfiguredError();
+      if (!forceNew && creatingSessionPromiseRef.current) {
+        return creatingSessionPromiseRef.current;
       }
 
-      const { data, error } = await getSupabaseClient()
-        .from('sessions')
-        .insert({
+      const task = (async (): Promise<ActiveSession> => {
+        const newQrHash = generateQrHash();
+        const eventTitle = `Phiên chụp #${newQrHash}`;
+
+        let createdSession: ActiveSession = {
+          id: `sess-${Date.now()}-${newQrHash}`,
           event_name: eventTitle,
           qr_code_hash: newQrHash,
-        })
-        .select('*')
-        .single();
+          created_at: new Date().toISOString(),
+        };
 
-      if (error) {
-        throw new Error(
-          `Lỗi tạo Session Supabase (${error.code ?? 'unknown'}): ${error.message}`
-        );
+        if (!isSupabaseReady()) {
+          throw new SupabaseNotConfiguredError();
+        }
+
+        const { data, error } = await getSupabaseClient()
+          .from('sessions')
+          .insert({
+            event_name: eventTitle,
+            qr_code_hash: newQrHash,
+          })
+          .select('*')
+          .single();
+
+        if (error) {
+          throw new Error(
+            `Lỗi tạo Session Supabase (${error.code ?? 'unknown'}): ${error.message}`
+          );
+        }
+        if (data) {
+          createdSession = data as ActiveSession;
+        }
+
+        void fetchWithTimeout(
+          `${webOriginRef.current}/api/sync`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'create_session',
+              event_name: createdSession.event_name,
+              qr_code_hash: createdSession.qr_code_hash,
+            }),
+          },
+          4000
+        ).catch(() => undefined);
+
+        activeSessionRef.current = createdSession;
+        setActiveSession(createdSession);
+        return createdSession;
+      })();
+
+      if (!forceNew) {
+        creatingSessionPromiseRef.current = task;
       }
-      if (data) {
-        createdSession = data as ActiveSession;
+      try {
+        return await task;
+      } finally {
+        if (creatingSessionPromiseRef.current === task) {
+          creatingSessionPromiseRef.current = null;
+        }
       }
-
-      void fetchWithTimeout(
-        `${webOriginRef.current}/api/sync`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'create_session',
-            event_name: createdSession.event_name,
-            qr_code_hash: createdSession.qr_code_hash,
-          }),
-        },
-        4000
-      ).catch(() => undefined);
-
-      activeSessionRef.current = createdSession;
-      setActiveSession(createdSession);
-      return createdSession;
     },
     []
   );

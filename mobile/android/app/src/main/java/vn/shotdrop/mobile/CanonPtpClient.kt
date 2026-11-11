@@ -48,6 +48,7 @@ class CanonPtpClient(
     private const val OC_GET_OBJECT_HANDLES = 0x1007
     private const val OC_GET_OBJECT_INFO = 0x1008
     private const val OC_GET_OBJECT = 0x1009
+    private const val OC_GET_THUMB = 0x100A
     private const val OC_INITIATE_CAPTURE = 0x100E
 
     // Standard PTP Response Codes
@@ -361,12 +362,11 @@ class CanonPtpClient(
    * Pulls one Live View JPEG frame via 0x9153 (GetViewFinderData).
    * Returns raw JPEG bytes or null if the camera is briefly busy/mirror transitioning.
    */
-  fun getLiveViewJpegFrame(): ByteArray? {
+  fun getLiveViewJpegFrame(drainEvents: Boolean = false): ByteArray? {
     if (!isHealthy() || !isCanonEos || !supportsLiveView) return null
 
-    // Drain any pending Canon events briefly without blocking live view
-    if (supportedOperations.contains(OC_CANON_EOS_GET_EVENT)) {
-      val evtRes = executeGetData(OC_CANON_EOS_GET_EVENT, intArrayOf(), timeoutMs = 1_500)
+    if (drainEvents && supportedOperations.contains(OC_CANON_EOS_GET_EVENT)) {
+      val evtRes = executeGetData(OC_CANON_EOS_GET_EVENT, intArrayOf(), timeoutMs = 1_200)
       if (evtRes.responseCode == RC_OK && evtRes.data.isNotEmpty()) {
         parseCanonEventsBuffer(evtRes.data)
       }
@@ -704,6 +704,18 @@ class CanonPtpClient(
     val size = buf.getInt(8).toLong() and 0xFFFFFFFFL
     val filename = readPtpStringAt(res.data, 52).first
     return Triple(format, size, filename)
+  }
+
+  /**
+   * Fetches embedded EXIF/PTP thumbnail via GetThumb (0x100A).
+   */
+  fun getObjectThumb(handle: Int): ByteArray? {
+    if (!isHealthy()) return null
+    val res = executeGetData(OC_GET_THUMB, intArrayOf(handle), timeoutMs = 2_000)
+    if (res.responseCode == RC_OK && res.data.isNotEmpty()) {
+      return res.data
+    }
+    return null
   }
 
   /**

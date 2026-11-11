@@ -8,7 +8,6 @@ import {
 import * as FileSystem from 'expo-file-system/legacy';
 import {
   USB_OTG_CHANGED_EVENT,
-  fetchUsbLiveViewFrame,
   isNativeUsbOtgAvailable,
   scanAndConnectUsbCamera,
   startUsbLiveView,
@@ -33,12 +32,10 @@ export function useUsbCamera(options?: {
   });
   const [otgDirectoryUri, setOtgDirectoryUri] = useState<string | null>(null);
   const [isLiveViewActive, setIsLiveViewActive] = useState<boolean>(false);
-  const [liveViewFrameUri, setLiveViewFrameUri] = useState<string | null>(null);
   const [isFocusingOtg, setIsFocusingOtg] = useState<boolean>(false);
   const [isCapturingOtg, setIsCapturingOtg] = useState<boolean>(false);
 
   const isCapturingOtgRef = useRef<boolean>(false);
-  const isAppActiveRef = useRef<boolean>(AppState.currentState === 'active');
   const isLiveViewUserToggledOffRef = useRef<boolean>(false);
   const autoStartedLiveViewDeviceRef = useRef<string | null>(null);
 
@@ -65,7 +62,6 @@ export function useUsbCamera(options?: {
     });
 
     const appStateSub = AppState.addEventListener('change', (nextState) => {
-      isAppActiveRef.current = nextState === 'active';
       if (nextState === 'active') {
         void refreshUsbStatus(false);
       }
@@ -77,11 +73,10 @@ export function useUsbCamera(options?: {
     };
   }, [refreshUsbStatus]);
 
-  // Automatically mirror Canon Live View into app when camera connects with LV active
+  // Automatically start native Canon Live View pump when camera connects with LV active
   useEffect(() => {
     if (!usbCameraStatus.connected || !usbCameraStatus.supportsLiveView) {
       setIsLiveViewActive(false);
-      setLiveViewFrameUri(null);
       isLiveViewUserToggledOffRef.current = false;
       autoStartedLiveViewDeviceRef.current = null;
       return;
@@ -107,62 +102,6 @@ export function useUsbCamera(options?: {
     usbCameraStatus.connected,
     usbCameraStatus.deviceName,
     usbCameraStatus.liveViewActive,
-    usbCameraStatus.supportsLiveView,
-  ]);
-
-  // Sequential Live View frame loop (automatically yields during remote shutter capture / background)
-  useEffect(() => {
-    if (
-      !usbCameraStatus.connected ||
-      !usbCameraStatus.supportsLiveView ||
-      !isLiveViewActive
-    ) {
-      return;
-    }
-
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
-    const pullNextFrame = async () => {
-      if (cancelled) return;
-      if (!isAppActiveRef.current || isCapturingOtgRef.current) {
-        timer = setTimeout(() => {
-          void pullNextFrame();
-        }, 200);
-        return;
-      }
-
-      const frame = await fetchUsbLiveViewFrame();
-      if (cancelled) return;
-
-      if (frame) {
-        if (frame.uri) {
-          setLiveViewFrameUri(frame.uri);
-        }
-        if (frame.active === false) {
-          setIsLiveViewActive(false);
-          setLiveViewFrameUri(null);
-          setUsbCameraStatus((prev) => ({ ...prev, liveViewActive: false }));
-          return;
-        }
-      }
-
-      timer = setTimeout(() => {
-        void pullNextFrame();
-      }, 75);
-    };
-
-    void pullNextFrame();
-
-    return () => {
-      cancelled = true;
-      if (timer) {
-        clearTimeout(timer);
-      }
-    };
-  }, [
-    isLiveViewActive,
-    usbCameraStatus.connected,
     usbCameraStatus.supportsLiveView,
   ]);
 
@@ -238,7 +177,6 @@ export function useUsbCamera(options?: {
     if (isLiveViewActive) {
       isLiveViewUserToggledOffRef.current = true;
       setIsLiveViewActive(false);
-      setLiveViewFrameUri(null);
       await stopUsbLiveView();
       setUsbCameraStatus((prev) => ({ ...prev, liveViewActive: false }));
       return;
@@ -298,7 +236,6 @@ export function useUsbCamera(options?: {
     setIsOtgLiveEnabled,
     otgDirectoryUri,
     isLiveViewActive,
-    liveViewFrameUri,
     isFocusingOtg,
     isCapturingOtg,
     isCapturingOtgRef,

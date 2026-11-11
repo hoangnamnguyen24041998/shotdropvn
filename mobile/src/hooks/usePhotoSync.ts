@@ -10,8 +10,13 @@ import {
 } from '../lib/supabase';
 import {
   captureUsbLiveViewPhoto,
+  clearCameraSessionUploads,
+  getCameraPhotosSummary,
+  importCameraHandles,
   isNativeUsbOtgAvailable,
+  syncUnsyncedCameraPhotos,
   syncUsbCamera,
+  type CameraCardPhotoItem,
   type UsbCameraStatus,
 } from '../lib/usbOtg';
 import { SupabaseNotConfiguredError } from './useActiveSession';
@@ -47,6 +52,7 @@ interface UsePhotoSyncOptions {
   onRequestConfigureSupabase: () => void;
   isOtgLiveEnabled: boolean;
   otgDirectoryUri: string | null;
+  usbCameraConnected: boolean;
   setUsbCameraStatus: React.Dispatch<React.SetStateAction<UsbCameraStatus>>;
   isCapturingOtgRef?: React.MutableRefObject<boolean>;
   setCapturingOtgState?: (next: boolean) => void;
@@ -59,6 +65,7 @@ export function usePhotoSync({
   onRequestConfigureSupabase,
   isOtgLiveEnabled,
   otgDirectoryUri,
+  usbCameraConnected,
   setUsbCameraStatus,
   isCapturingOtgRef,
   setCapturingOtgState,
@@ -90,6 +97,23 @@ export function usePhotoSync({
   const knownSafFilesSetRef = useRef<Set<string>>(new Set());
   const seededOtgDirectoryRef = useRef<string | null>(null);
   const isOtgPollingRef = useRef<boolean>(false);
+  const pendingUploadQueueRef = useRef<LocalPhotoItem[]>([]);
+  const usbCameraConnectedRef = useRef<boolean>(usbCameraConnected);
+  usbCameraConnectedRef.current = usbCameraConnected;
+
+  // Camera OTG Card Browser & Sync State
+  const [isCameraPickerVisible, setIsCameraPickerVisible] =
+    useState<boolean>(false);
+  const [isLoadingCameraPhotos, setIsLoadingCameraPhotos] =
+    useState<boolean>(false);
+  const [cameraCardPhotos, setCameraCardPhotos] = useState<
+    CameraCardPhotoItem[]
+  >([]);
+  const [cameraCardTotalCount, setCameraCardTotalCount] = useState<number>(0);
+  const [cameraCardUnsyncedCount, setCameraCardUnsyncedCount] =
+    useState<number>(0);
+  const [isSyncingCamera, setIsSyncingCamera] = useState<boolean>(false);
+  const isSyncingCameraRef = useRef<boolean>(false);
 
   useEffect(() => {
     uploadingRef.current = uploading;
@@ -109,31 +133,68 @@ export function usePhotoSync({
   }, []);
 
   // Upload a batch of LocalPhotoItem to Supabase AND relay to Web Server.
-  // Only adds photos to `recentPhotos` AFTER upload succeeds so un-uploaded photos never appear.
+  // Queues rapid subsequent photos seamlessly so Live View / OTG bursts never drop frames,
+  // and always syncs into the current active QR session (or creates one if none exists yet).
   const uploadPhotosBatch = useCallback(
     async (
       itemsToUpload: LocalPhotoItem[],
       options?: { forceNewSession?: boolean }
     ) => {
-      if (itemsToUpload.length === 0 || uploadingRef.current) return;
+      if (itemsToUpload.length === 0) return;
+
+      const forceNew = Boolean(options?.forceNewSession);
+      const dedupeAgainstUploaded = (items: LocalPhotoItem[]) =>
+        items.filter(
+          (item) =>
+            forceNew ||
+            (!uploadedIdsSetRef.current.has(item.id) &&
+              !(item.uri && uploadedUrisSetRef.current.has(item.uri)))
+        );
+
+      if (uploadingRef.current) {
+        if (forceNew) return;
+        const freshItems = dedupeAgainstUploaded(itemsToUpload).filter(
+          (item) =>
+            !pendingUploadQueueRef.current.some(
+              (q) => q.id === item.id || (Boolean(item.uri) && q.uri === item.uri)
+            )
+        );
+        if (freshItems.length > 0) {
+          pendingUploadQueueRef.current.push(...freshItems);
+          setStatusMessage(
+            `Đang xếp hàng +${pendingUploadQueueRef.current.length} ảnh vào phiên QR...`
+          );
+        }
+        return;
+      }
+
+      const workQueue = dedupeAgainstUploaded(itemsToUpload);
+      if (workQueue.length === 0) return;
 
       uploadingRef.current = true;
       setUploading(true);
       setLongPressedPhotoId(null);
 
       try {
-        setStatusMessage('Đang khởi tạo mã QR cho phiên chụp...');
-        const currentSession = await ensureActiveSession(
-          options?.forceNewSession ?? false
-        );
+        setStatusMessage('Đang chuẩn bị mã QR phiên chụp...');
+        const currentSession = await ensureActiveSession(forceNew);
 
         let successCount = 0;
         let hasResetForNewSession = false;
 
-        for (let i = 0; i < itemsToUpload.length; i++) {
-          const item = itemsToUpload[i];
+        const pullQueuedIntoWorkQueue = () => {
+          while (pendingUploadQueueRef.current.length > 0) {
+            const next = pendingUploadQueueRef.current.shift();
+            if (next) {
+              workQueue.push(next);
+            }
+          }
+        };
+
+        for (let i = 0; i < workQueue.length; i++) {
+          const item = workQueue[i];
           setStatusMessage(
-            `Đang upload ${i + 1}/${itemsToUpload.length}...`
+            `Đang đẩy ${i + 1}/${workQueue.length} ảnh → #${currentSession.qr_code_hash}...`
           );
 
           let base64Data: string;
@@ -209,8 +270,7 @@ export function usePhotoSync({
           ).catch(() => undefined);
 
           // Clear previous session photo tracking once on the first succeeded upload when detaching into a new QR
-          const resetForNewSession =
-            Boolean(options?.forceNewSession) && !hasResetForNewSession;
+          const resetForNewSession = forceNew && !hasResetForNewSession;
           if (resetForNewSession) {
             hasResetForNewSession = true;
             uploadedIdsSetRef.current.clear();
@@ -232,12 +292,20 @@ export function usePhotoSync({
             );
             return alreadyPresent ? baseList : [item, ...baseList];
           });
+
+          pullQueuedIntoWorkQueue();
         }
 
         setSelectedPhotoIds([]);
-        setStatusMessage(`Đã upload ${successCount} ảnh lên Web`);
-        onShowToast('success', `Đã upload ${successCount} ảnh thành công!`);
+        setStatusMessage(
+          `Đã đồng bộ ${successCount} ảnh lên QR #${currentSession.qr_code_hash}`
+        );
+        onShowToast(
+          'success',
+          `Đã upload ${successCount} ảnh vào mã QR #${currentSession.qr_code_hash}!`
+        );
       } catch (err) {
+        pendingUploadQueueRef.current = [];
         const msg = err instanceof Error ? err.message : String(err);
         console.error('[ShotDropVN] Upload to Supabase failed:', err);
         setStatusMessage(`Lỗi: ${msg}`);
@@ -371,8 +439,8 @@ export function usePhotoSync({
     [onShowToast, recentPhotos, webOriginRef]
   );
 
-  // Pick photos from phone gallery / Canon Connect and upload immediately
-  const handlePickFromCanonConnect = useCallback(async () => {
+  // Pick photos strictly from phone library and upload immediately into active/new QR
+  const handlePickFromPhoneGallery = useCallback(async () => {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
@@ -398,19 +466,249 @@ export function usePhotoSync({
         };
       });
 
-      // Upload directly; only successfully uploaded items will appear in the list below
       await uploadPhotosBatch(pickedItems);
     } catch (err) {
       const msg =
-        err instanceof Error ? err.message : 'Không thể mở bộ chọn ảnh';
+        err instanceof Error ? err.message : 'Không thể mở thư viện ảnh điện thoại';
       Alert.alert('Lỗi chọn ảnh', msg);
     }
   }, [uploadPhotosBatch]);
 
+  // Open camera card photo picker modal (only when OTG camera is connected)
+  const openCameraPhotoPicker = useCallback(async () => {
+    setIsCameraPickerVisible(true);
+    setIsLoadingCameraPhotos(true);
+    try {
+      const summary = await getCameraPhotosSummary(120);
+      setCameraCardTotalCount(summary.totalCount);
+      setCameraCardUnsyncedCount(summary.unsyncedCount);
+      setCameraCardPhotos(summary.photos);
+      if (summary.error) {
+        onShowToast('error', summary.error);
+      }
+    } finally {
+      setIsLoadingCameraPhotos(false);
+    }
+  }, [onShowToast]);
+
+  // Auto-sync un-uploaded photos currently on OTG camera/card straight into active (or new) QR session
+  const syncCameraUnsyncedBatch = useCallback(
+    async (limit = 0) => {
+      if (isSyncingCameraRef.current) return;
+      isSyncingCameraRef.current = true;
+      setIsSyncingCamera(true);
+      try {
+        if (usbCameraConnectedRef.current) {
+          setStatusMessage('Đang đồng bộ ảnh từ máy ảnh qua USB OTG...');
+          const res = await syncUnsyncedCameraPhotos(limit);
+          if (res.error) {
+            onShowToast('error', res.error);
+            return;
+          }
+          const items: LocalPhotoItem[] = res.photos
+            .filter((p) => !uploadedUrisSetRef.current.has(p.uri))
+            .map((p) => ({
+              id: p.id,
+              uri: p.uri,
+              filename: p.filename,
+              creationTime: p.creationTime,
+            }));
+
+          if (items.length === 0) {
+            onShowToast(
+              'info',
+              'Tất cả ảnh trên máy ảnh đã có trong phiên QR hiện tại!'
+            );
+            setStatusMessage('Mọi ảnh từ máy ảnh đã được đồng bộ.');
+            return;
+          }
+
+          setIsCameraPickerVisible(false);
+          await uploadPhotosBatch(items);
+          return;
+        }
+
+        if (otgDirectoryUri) {
+          const files =
+            await FileSystem.StorageAccessFramework.readDirectoryAsync(
+              otgDirectoryUri
+            );
+          const jpegFiles = files
+            .filter((f) => /\.(jpe?g)$/i.test(decodeURIComponent(f)))
+            .filter((f) => !uploadedUrisSetRef.current.has(f));
+          const toPull =
+            limit > 0 ? jpegFiles.slice(-limit) : jpegFiles;
+          if (toPull.length === 0) {
+            onShowToast('info', 'Tất cả ảnh trong thư mục OTG đã được đẩy lên QR!');
+            return;
+          }
+          const safItems: LocalPhotoItem[] = toPull.map((fileUri, idx) => {
+            knownSafFilesSetRef.current.add(fileUri);
+            const decoded = decodeURIComponent(fileUri);
+            const namePart =
+              decoded.split('/').pop()?.split(':').pop() ||
+              `OTG_${Date.now()}_${idx}.JPG`;
+            return {
+              id: `otg-saf-sync-${Date.now()}-${idx}`,
+              uri: fileUri,
+              filename: namePart,
+              creationTime: Date.now() + idx,
+            };
+          });
+          setIsCameraPickerVisible(false);
+          await uploadPhotosBatch(safItems);
+        }
+      } finally {
+        isSyncingCameraRef.current = false;
+        setIsSyncingCamera(false);
+      }
+    },
+    [onShowToast, otgDirectoryUri, uploadPhotosBatch]
+  );
+
+  // Sync button on OtgTetherConsole: pushes un-uploaded old photos on camera into active (or new) QR session
+  const handleSyncCameraPhotos = useCallback(async () => {
+    if (isSyncingCameraRef.current) return;
+    if (usbCameraConnectedRef.current) {
+      isSyncingCameraRef.current = true;
+      setIsSyncingCamera(true);
+      let summary;
+      try {
+        setStatusMessage('Đang kiểm tra ảnh chưa đồng bộ trên máy ảnh...');
+        summary = await getCameraPhotosSummary(250);
+      } finally {
+        isSyncingCameraRef.current = false;
+        setIsSyncingCamera(false);
+      }
+
+      if (summary.error) {
+        onShowToast('error', summary.error);
+        return;
+      }
+      if (summary.totalCount === 0) {
+        onShowToast('info', 'Chưa có ảnh JPEG nào trên thẻ nhớ máy ảnh.');
+        return;
+      }
+      if (summary.unsyncedCount === 0) {
+        Alert.alert(
+          'Tất cả ảnh đã lên QR',
+          `Toàn bộ ${summary.totalCount} ảnh hiện có trên máy ảnh đã được đồng bộ. Bạn có muốn mở thẻ nhớ để chọn lại ảnh cũ không?`,
+          [
+            { text: 'Đóng', style: 'cancel' },
+            {
+              text: 'Chọn ảnh trên thẻ',
+              onPress: () => void openCameraPhotoPicker(),
+            },
+          ]
+        );
+        return;
+      }
+      if (summary.unsyncedCount <= 25) {
+        await syncCameraUnsyncedBatch(0);
+        return;
+      }
+
+      Alert.alert(
+        `Có ${summary.unsyncedCount} ảnh chưa đẩy trên máy ảnh`,
+        'Chọn cách đồng bộ vào phiên QR hiện tại (nếu chưa có QR app sẽ tự tạo mới):',
+        [
+          { text: 'Huỷ', style: 'cancel' },
+          {
+            text: 'Chọn từng ảnh',
+            onPress: () => void openCameraPhotoPicker(),
+          },
+          {
+            text: 'Sync 20 ảnh gần nhất',
+            onPress: () => void syncCameraUnsyncedBatch(20),
+          },
+          {
+            text: `Sync tất cả (${summary.unsyncedCount})`,
+            onPress: () => void syncCameraUnsyncedBatch(0),
+          },
+        ]
+      );
+      return;
+    }
+
+    if (otgDirectoryUri) {
+      await syncCameraUnsyncedBatch(25);
+    }
+  }, [
+    onShowToast,
+    openCameraPhotoPicker,
+    otgDirectoryUri,
+    syncCameraUnsyncedBatch,
+  ]);
+
+  // Import specifically chosen handles from CameraOtgPickerModal and auto-upload to active/new QR
+  const handleImportSelectedCameraHandles = useCallback(
+    async (handles: number[]) => {
+      if (handles.length === 0 || isSyncingCameraRef.current) return;
+      isSyncingCameraRef.current = true;
+      setIsSyncingCamera(true);
+      try {
+        setStatusMessage(`Đang chép ${handles.length} ảnh từ máy ảnh USB OTG...`);
+        const res = await importCameraHandles(handles);
+        if (res.error) {
+          onShowToast('error', res.error);
+        }
+        const items: LocalPhotoItem[] = res.photos.map((p) => ({
+          id: p.id,
+          uri: p.uri,
+          filename: p.filename,
+          creationTime: p.creationTime,
+        }));
+        setIsCameraPickerVisible(false);
+        if (items.length > 0) {
+          await uploadPhotosBatch(items);
+        } else {
+          onShowToast('error', 'Không chép được ảnh đã chọn từ máy ảnh.');
+        }
+      } finally {
+        isSyncingCameraRef.current = false;
+        setIsSyncingCamera(false);
+      }
+    },
+    [onShowToast, uploadPhotosBatch]
+  );
+
+  // Unified Upload Button handler (Req 4 & 5):
+  // - OTG USB connected: defaults to Camera source (with phone gallery option inside modal)
+  // - No OTG USB connected: opens Phone Gallery strictly
+  const handlePickUploadPhotos = useCallback(() => {
+    if (usbCameraConnectedRef.current) {
+      void openCameraPhotoPicker();
+      return;
+    }
+    if (otgDirectoryUri) {
+      Alert.alert(
+        'Chọn nguồn ảnh Upload',
+        'Đang kết nối bộ nhớ/thư mục USB OTG — chọn nguồn lấy ảnh:',
+        [
+          { text: 'Huỷ', style: 'cancel' },
+          {
+            text: 'Thư viện điện thoại',
+            onPress: () => void handlePickFromPhoneGallery(),
+          },
+          {
+            text: 'Thư mục USB OTG',
+            onPress: () => void handleSyncCameraPhotos(),
+          },
+        ]
+      );
+      return;
+    }
+    void handlePickFromPhoneGallery();
+  }, [
+    handlePickFromPhoneGallery,
+    handleSyncCameraPhotos,
+    openCameraPhotoPicker,
+    otgDirectoryUri,
+  ]);
+
   // Pull N latest photos from connected USB OTG camera and upload immediately
   const handlePullLatestFromOtgCard = useCallback(
     async (count = 5) => {
-      if (uploadingRef.current) return;
       setStatusMessage(
         `Đang đọc ${count} ảnh mới nhất từ thẻ nhớ máy ảnh qua cáp OTG...`
       );
@@ -442,7 +740,7 @@ export function usePhotoSync({
   // Trigger remote shutter via USB OTG (even while Live View is active) and push JPEG straight to QR Web
   const handleCaptureLiveViewPhoto = useCallback(
     async (withAf = true) => {
-      if (uploadingRef.current || isCapturingOtgRef?.current) return;
+      if (isCapturingOtgRef?.current) return;
       setCapturingOtgState?.(true);
       isOtgPollingRef.current = true;
       setStatusMessage('Đang chụp & xuất ảnh từ máy ảnh qua USB OTG...');
@@ -499,11 +797,7 @@ export function usePhotoSync({
     if (!isOtgLiveEnabled) return;
 
     const interval = setInterval(async () => {
-      if (
-        isOtgPollingRef.current ||
-        uploadingRef.current ||
-        isCapturingOtgRef?.current
-      ) {
+      if (isOtgPollingRef.current || isCapturingOtgRef?.current) {
         return;
       }
       isOtgPollingRef.current = true;
@@ -615,6 +909,8 @@ export function usePhotoSync({
   }, []);
 
   const clearSessionPhotos = useCallback(() => {
+    pendingUploadQueueRef.current = [];
+    void clearCameraSessionUploads();
     setRecentPhotos([]);
     setSelectedPhotoIds([]);
     setUploadedPhotoIds([]);
@@ -636,9 +932,21 @@ export function usePhotoSync({
     deletingCount,
     statusMessage,
     sessionPhotosCount,
+    isCameraPickerVisible,
+    setIsCameraPickerVisible,
+    isLoadingCameraPhotos,
+    cameraCardPhotos,
+    cameraCardTotalCount,
+    cameraCardUnsyncedCount,
+    isSyncingCamera,
     uploadPhotosBatch,
     executeDeletePhotos,
-    handlePickFromCanonConnect,
+    handlePickUploadPhotos,
+    handlePickFromPhoneGallery,
+    openCameraPhotoPicker,
+    handleSyncCameraPhotos,
+    syncCameraUnsyncedBatch,
+    handleImportSelectedCameraHandles,
     handlePullLatestFromOtgCard,
     handleCaptureLiveViewPhoto,
     toggleSelectPhoto,

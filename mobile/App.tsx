@@ -23,14 +23,15 @@ import { PhotoTile } from './src/components/PhotoTile';
 import { EmptyPhotoView } from './src/components/EmptyPhotoView';
 import { SelectionFloatingBar } from './src/components/SelectionFloatingBar';
 import { SelectionMenuModal } from './src/components/SelectionMenuModal';
+import { CameraOtgPickerModal } from './src/components/CameraOtgPickerModal';
 import { DeletingSpinnerModal } from './src/components/DeletingSpinnerModal';
 import { ToastBanner } from './src/components/ToastBanner';
 
 // Styles
 import { styles } from './src/styles/appStyles';
 
-export const APP_VERSION = '1.2.11';
-export const APP_BUILD = 14;
+export const APP_VERSION = '1.2.12';
+export const APP_BUILD = 15;
 
 export default function App() {
   const { toast, showToast } = useToast();
@@ -46,7 +47,6 @@ export default function App() {
     setIsOtgLiveEnabled,
     otgDirectoryUri,
     isLiveViewActive,
-    liveViewFrameUri,
     isFocusingOtg,
     isCapturingOtg,
     isCapturingOtgRef,
@@ -58,6 +58,8 @@ export default function App() {
   } = useUsbCamera({
     onStatusMessage: (msg) => showToast('info', msg),
   });
+
+  const isOtgConnected = usbCameraStatus.connected || Boolean(otgDirectoryUri);
 
   // Photo Synchronization Hook forward declarations
   const clearSessionPhotosRef = useRef<() => void>(() => {});
@@ -97,10 +99,20 @@ export default function App() {
     deletingCount,
     statusMessage,
     sessionPhotosCount,
+    isCameraPickerVisible,
+    setIsCameraPickerVisible,
+    isLoadingCameraPhotos,
+    cameraCardPhotos,
+    cameraCardTotalCount,
+    cameraCardUnsyncedCount,
+    isSyncingCamera,
     uploadPhotosBatch,
     executeDeletePhotos,
-    handlePickFromCanonConnect,
-    handlePullLatestFromOtgCard,
+    handlePickUploadPhotos,
+    handlePickFromPhoneGallery,
+    handleSyncCameraPhotos,
+    syncCameraUnsyncedBatch,
+    handleImportSelectedCameraHandles,
     handleCaptureLiveViewPhoto,
     toggleSelectPhoto,
     handleLongPressPhoto,
@@ -120,6 +132,7 @@ export default function App() {
     },
     isOtgLiveEnabled,
     otgDirectoryUri,
+    usbCameraConnected: usbCameraStatus.connected,
     setUsbCameraStatus,
     isCapturingOtgRef,
     setCapturingOtgState,
@@ -238,7 +251,7 @@ export default function App() {
       selectedPhotoIds.includes(a.id)
     );
     if (selectedItems.length === 0) {
-      await handlePickFromCanonConnect();
+      handlePickUploadPhotos();
       return;
     }
     setIsSelectionMenuExpanded(false);
@@ -280,8 +293,9 @@ export default function App() {
               webOrigin={webOrigin}
               pulseAnim={pulseAnim}
               uploading={uploading}
+              isOtgConnected={isOtgConnected}
               statusMessage={statusMessage}
-              onPickPhotos={handlePickFromCanonConnect}
+              onPickPhotos={handlePickUploadPhotos}
               onEndSession={handleEndSession}
             />
 
@@ -293,13 +307,13 @@ export default function App() {
               uploading={uploading}
               statusMessage={statusMessage}
               isLiveViewActive={isLiveViewActive}
-              liveViewFrameUri={liveViewFrameUri}
               isFocusingOtg={isFocusingOtg}
               isCapturingOtg={isCapturingOtg}
+              isSyncingCamera={isSyncingCamera}
               onToggleOtgLive={() => setIsOtgLiveEnabled((prev) => !prev)}
               onConnectOtg={handleConnectUsbOtgCamera}
               onSelectOtgFolder={handleSelectOtgFolder}
-              onPullLatestPhotos={handlePullLatestFromOtgCard}
+              onSyncCameraPhotos={() => void handleSyncCameraPhotos()}
               onToggleLiveView={() => void handleToggleLiveView()}
               onAutoFocusOtg={() => void handleAutoFocusOtg()}
               onCaptureLiveViewPhoto={() => void handleCaptureLiveViewPhoto(true)}
@@ -372,6 +386,24 @@ export default function App() {
         onClearSelection={clearSelection}
         onUploadSelected={handleUploadSelected}
         onDeleteSelected={handleDeleteSelected}
+      />
+
+      {/* Camera OTG Photo Picker & Sync Modal (only when OTG USB is attached) */}
+      <CameraOtgPickerModal
+        visible={isCameraPickerVisible}
+        cameraName={usbCameraStatus.deviceName}
+        activeSession={activeSession}
+        photos={cameraCardPhotos}
+        totalCount={cameraCardTotalCount}
+        unsyncedCount={cameraCardUnsyncedCount}
+        loading={isLoadingCameraPhotos}
+        syncing={isSyncingCamera}
+        onClose={() => setIsCameraPickerVisible(false)}
+        onUploadHandles={(handles) =>
+          void handleImportSelectedCameraHandles(handles)
+        }
+        onSyncUnsynced={(limit) => void syncCameraUnsyncedBatch(limit)}
+        onSwitchToPhoneGallery={() => void handlePickFromPhoneGallery()}
       />
 
       {/* Deleting Spinner Modal */}

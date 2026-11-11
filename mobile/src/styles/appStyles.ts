@@ -455,10 +455,10 @@ export const styles = StyleSheet.create({
     color: colors.textInverse,
   },
   canonConnectHeroBtn: {
-    minHeight: 54,
+    height: 64,
     backgroundColor: colors.accent,
     borderRadius: radii.lg,
-    paddingVertical: 13,
+    paddingVertical: 10,
     paddingHorizontal: spacing.lg,
     alignItems: 'center',
     justifyContent: 'center',

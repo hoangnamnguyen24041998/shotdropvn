@@ -26,6 +26,7 @@ interface QrStudioDeckProps {
   webOrigin: string;
   pulseAnim: Animated.Value;
   uploading: boolean;
+  isOtgConnected: boolean;
   statusMessage: string;
   onPickPhotos: () => void;
   onEndSession: () => void;
@@ -36,6 +37,7 @@ export const QrStudioDeck: React.FC<QrStudioDeckProps> = ({
   webOrigin,
   pulseAnim,
   uploading,
+  isOtgConnected,
   statusMessage,
   onPickPhotos,
   onEndSession,
@@ -124,8 +126,10 @@ export const QrStudioDeck: React.FC<QrStudioDeckProps> = ({
                     Upload thêm ảnh
                   </Text>
                 </View>
-                <Text style={styles.canonConnectHeroBtnSub}>
-                  Chọn ảnh từ máy để đẩy tiếp vào mã QR #{activeSession.qr_code_hash}
+                <Text style={styles.canonConnectHeroBtnSub} numberOfLines={1}>
+                  {isOtgConnected
+                    ? `Từ máy ảnh OTG (hoặc thư viện) → QR #${activeSession.qr_code_hash}`
+                    : `Từ thư viện điện thoại → QR #${activeSession.qr_code_hash}`}
                 </Text>
               </View>
             )}
@@ -197,11 +201,15 @@ export const QrStudioDeck: React.FC<QrStudioDeckProps> = ({
                 <View style={styles.canonBtnTitleRow}>
                   <CameraApertureIcon size={19} color={colors.textInverse} />
                   <Text style={styles.canonConnectHeroBtnText}>
-                    Chọn ảnh từ thư viện / Canon Connect
+                    {isOtgConnected
+                      ? 'Chọn ảnh từ máy ảnh / thư viện'
+                      : 'Chọn ảnh từ thư viện điện thoại'}
                   </Text>
                 </View>
-                <Text style={styles.canonConnectHeroBtnSub}>
-                  Chọn ảnh trên máy → Tạo ngay mã QR Live
+                <Text style={styles.canonConnectHeroBtnSub} numberOfLines={1}>
+                  {isOtgConnected
+                    ? 'Mặc định máy ảnh OTG • Có thể lấy từ điện thoại → Tạo QR'
+                    : 'Chọn ảnh trên điện thoại → Tạo ngay mã QR Live'}
                 </Text>
               </View>
             )}
