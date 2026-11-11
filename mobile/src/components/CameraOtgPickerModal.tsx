@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Dimensions,
   FlatList,
   Image,
   Modal,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -17,6 +19,7 @@ import {
   UploadArrowIcon,
 } from './Icons';
 import {
+  getAndroidSystemBottomInset,
   getCameraPhotoThumbnail,
   type CameraCardPhotoItem,
 } from '../lib/usbOtg';
@@ -54,7 +57,27 @@ export const CameraOtgPickerModal: React.FC<CameraOtgPickerModalProps> = ({
 }) => {
   const [selectedHandles, setSelectedHandles] = useState<number[]>([]);
   const [thumbMap, setThumbMap] = useState<Record<number, string>>({});
+  const [androidBottomInset, setAndroidBottomInset] = useState<number>(
+    Platform.OS === 'android' ? 48 : 0
+  );
   const abortThumbLoadRef = useRef<boolean>(false);
+
+  // Measure Android system navigation bar bottom inset so footer clears hardware/gesture bar
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    let active = true;
+    const measure = () => {
+      void getAndroidSystemBottomInset().then((inset) => {
+        if (active) setAndroidBottomInset(inset);
+      });
+    };
+    if (visible) measure();
+    const sub = Dimensions.addEventListener('change', measure);
+    return () => {
+      active = false;
+      sub.remove();
+    };
+  }, [visible]);
 
   // Reset selection whenever modal opens/closes or photo list refreshes
   useEffect(() => {
@@ -117,6 +140,8 @@ export const CameraOtgPickerModal: React.FC<CameraOtgPickerModalProps> = ({
     <Modal
       visible={visible}
       transparent
+      statusBarTranslucent
+      navigationBarTranslucent
       animationType="slide"
       onRequestClose={onClose}
     >
@@ -263,8 +288,18 @@ export const CameraOtgPickerModal: React.FC<CameraOtgPickerModalProps> = ({
             />
           )}
 
-          {/* Footer CTA */}
-          <View style={modalStyles.footer}>
+          {/* Footer CTA (padded cleanly above Android system navigation bar) */}
+          <View
+            style={[
+              modalStyles.footer,
+              {
+                paddingBottom:
+                  Platform.OS === 'android'
+                    ? Math.max(28, androidBottomInset + 14)
+                    : spacing.xl,
+              },
+            ]}
+          >
             <Pressable
               onPress={() => {
                 abortThumbLoadRef.current = true;
@@ -307,7 +342,8 @@ const modalStyles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   sheet: {
-    height: '82%',
+    height: '86%',
+    maxHeight: '90%',
     backgroundColor: colors.surface,
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,

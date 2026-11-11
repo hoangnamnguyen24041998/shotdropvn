@@ -12,6 +12,8 @@ import android.hardware.usb.UsbManager
 import android.mtp.MtpConstants
 import android.mtp.MtpDevice
 import android.os.Build
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.LifecycleEventListener
 import com.facebook.react.bridge.Promise
@@ -1232,6 +1234,42 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
             putString("error", e.message ?: "Lỗi tải ảnh từ máy ảnh")
           })
         }
+      }
+    }
+  }
+
+  @ReactMethod
+  fun getSystemInsets(promise: Promise) {
+    val activity = reactContext.currentActivity
+    if (activity == null) {
+      val resId = reactContext.resources.getIdentifier("navigation_bar_height", "dimen", "android")
+      val px = if (resId > 0) reactContext.resources.getDimensionPixelSize(resId) else 0
+      val density = reactContext.resources.displayMetrics.density.coerceAtLeast(1f)
+      promise.resolve(Arguments.createMap().apply {
+        putDouble("bottom", (px / density).toDouble())
+      })
+      return
+    }
+    activity.runOnUiThread {
+      try {
+        val density = activity.resources.displayMetrics.density.coerceAtLeast(1f)
+        val rootInsets = ViewCompat.getRootWindowInsets(activity.window.decorView)
+        val navBottomPx = rootInsets
+          ?.getInsets(WindowInsetsCompat.Type.navigationBars() or WindowInsetsCompat.Type.displayCutout())
+          ?.bottom ?: 0
+        val resolvedPx = if (navBottomPx > 0) {
+          navBottomPx
+        } else {
+          val resId = activity.resources.getIdentifier("navigation_bar_height", "dimen", "android")
+          if (resId > 0) activity.resources.getDimensionPixelSize(resId) else 0
+        }
+        promise.resolve(Arguments.createMap().apply {
+          putDouble("bottom", (resolvedPx / density).toDouble())
+        })
+      } catch (_: Exception) {
+        promise.resolve(Arguments.createMap().apply {
+          putDouble("bottom", 48.0)
+        })
       }
     }
   }

@@ -56,6 +56,20 @@ function mapImportedOtgPhoto(p: ImportedOtgPhoto): LocalPhotoItem {
   };
 }
 
+function collectOtgIdentityTokens(item: {
+  handle?: number;
+  filename: string;
+  size?: number;
+  cameraKey?: string;
+}): string[] {
+  const lower = item.filename.trim().toLowerCase();
+  const tokens: string[] = [];
+  if (item.cameraKey) tokens.push(`key:${item.cameraKey}`);
+  if (item.handle !== undefined) tokens.push(`h:${item.handle}:${lower}`);
+  if (item.size && item.size > 0) tokens.push(`sz:${lower}#${item.size}`);
+  return tokens;
+}
+
 interface UsePhotoSyncOptions {
   activeSessionRef: React.MutableRefObject<ActiveSession | null>;
   webOriginRef: React.MutableRefObject<string>;
@@ -109,8 +123,11 @@ export function usePhotoSync({
   );
   const knownSafFilesSetRef = useRef<Set<string>>(new Set());
   const seededOtgDirectoryRef = useRef<string | null>(null);
-  const initialBaselineKeysRef = useRef<Set<string>>(new Set());
+  const otgDirectoryUriRef = useRef<string | null>(otgDirectoryUri);
+  otgDirectoryUriRef.current = otgDirectoryUri;
+  const sessionBaselineTokensRef = useRef<Set<string>>(new Set());
   const baselineCapturedRef = useRef<boolean>(false);
+  const baselineRefreshPromiseRef = useRef<Promise<boolean> | null>(null);
   const isOtgPollingRef = useRef<boolean>(false);
   const pendingUploadQueueRef = useRef<LocalPhotoItem[]>([]);
   const usbCameraConnectedRef = useRef<boolean>(usbCameraConnected);
@@ -167,33 +184,80 @@ export function usePhotoSync({
     ).catch(() => undefined);
   }, [activeSessionRef, recentPhotos]);
 
-  // Capture initial card photo keys when OTG camera connects so Sync knows pre-existing vs freshly shot photos
+  const addCardItemsToBaseline = useCallback(
+    (
+      items: Array<{
+        handle?: number;
+        filename: string;
+        size?: number;
+        cameraKey?: string;
+      }>
+    ) => {
+      for (const item of items) {
+        for (const token of collectOtgIdentityTokens(item)) {
+          sessionBaselineTokensRef.current.add(token);
+        }
+      }
+    },
+    []
+  );
+
+  const isItemInBaseline = useCallback((item: CameraCardPhotoItem): boolean => {
+    const tokens = collectOtgIdentityTokens(item);
+    return tokens.some((t) => sessionBaselineTokensRef.current.has(t));
+  }, []);
+
+  const refreshOtgBaselineFromCard = useCallback((): Promise<boolean> => {
+    const task = (async (): Promise<boolean> => {
+      const summary = await getCameraPhotosSummary(0);
+      if (summary.error) {
+        return false;
+      }
+      addCardItemsToBaseline(summary.photos);
+      baselineCapturedRef.current = true;
+      return true;
+    })().finally(() => {
+      if (baselineRefreshPromiseRef.current === task) {
+        baselineRefreshPromiseRef.current = null;
+      }
+    });
+
+    baselineRefreshPromiseRef.current = task;
+    return task;
+  }, [addCardItemsToBaseline]);
+
+  // Capture initial card photo baseline when OTG camera connects (retry briefly if MTP/PTP bus is still initializing)
   useEffect(() => {
     if (!usbCameraConnected) {
       baselineCapturedRef.current = false;
-      initialBaselineKeysRef.current.clear();
+      sessionBaselineTokensRef.current.clear();
+      baselineRefreshPromiseRef.current = null;
       return;
     }
     if (baselineCapturedRef.current) return;
-    baselineCapturedRef.current = true;
 
     let cancelled = false;
-    void (async () => {
-      const summary = await getCameraPhotosSummary(0);
-      if (cancelled || summary.error) return;
-      const keys = new Set<string>();
-      for (const item of summary.photos) {
-        if (item.cameraKey) {
-          keys.add(item.cameraKey);
-        }
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const captureAttempt = async () => {
+      if (cancelled || !usbCameraConnectedRef.current) return;
+      const ok = await refreshOtgBaselineFromCard();
+      if (!ok && !cancelled && usbCameraConnectedRef.current) {
+        retryTimer = setTimeout(() => {
+          void captureAttempt();
+        }, 1200);
       }
-      initialBaselineKeysRef.current = keys;
-    })();
+    };
+
+    void captureAttempt();
 
     return () => {
       cancelled = true;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+      }
     };
-  }, [usbCameraConnected]);
+  }, [refreshOtgBaselineFromCard, usbCameraConnected]);
 
   const isPhotoUploaded = useCallback((item: LocalPhotoItem) => {
     return (
@@ -791,12 +855,15 @@ export function usePhotoSync({
 
   // Auto-sync un-uploaded photos comparing card photo list against current session's recentPhotos
   const syncCameraUnsyncedBatch = useCallback(
-    async (limit = 0) => {
+    async (limit = 0, onlySinceBaseline = false) => {
       if (isSyncingCameraRef.current) return;
       isSyncingCameraRef.current = true;
       setIsSyncingCamera(true);
       try {
         if (usbCameraConnectedRef.current) {
+          if (baselineRefreshPromiseRef.current) {
+            await baselineRefreshPromiseRef.current;
+          }
           setStatusMessage('Đang so sánh danh sách ảnh thẻ nhớ với phiên QR...');
           const summary = await getCameraPhotosSummary(0);
           if (summary.error) {
@@ -805,12 +872,16 @@ export function usePhotoSync({
           }
 
           const missing = summary.photos.filter(
-            (item) => !isCardPhotoUploaded(item)
+            (item) =>
+              !isCardPhotoUploaded(item) &&
+              (!onlySinceBaseline || !isItemInBaseline(item))
           );
           if (missing.length === 0) {
             onShowToast(
               'info',
-              'Tất cả ảnh trên máy ảnh đã có trong phiên QR hiện tại!'
+              onlySinceBaseline
+                ? 'Không có ảnh mới chụp nào chưa đồng bộ từ máy ảnh.'
+                : 'Tất cả ảnh trên máy ảnh đã có trong phiên QR hiện tại!'
             );
             setStatusMessage('Mọi ảnh từ máy ảnh đã được đồng bộ.');
             return;
@@ -829,12 +900,18 @@ export function usePhotoSync({
             );
           const jpegFiles = files
             .filter((f) => /\.(jpe?g)$/i.test(decodeURIComponent(f)))
-            .filter((f) => !uploadedUrisSetRef.current.has(f));
+            .filter(
+              (f) =>
+                !uploadedUrisSetRef.current.has(f) &&
+                (!onlySinceBaseline || !knownSafFilesSetRef.current.has(f))
+            );
           const toPull = limit > 0 ? jpegFiles.slice(-limit) : jpegFiles;
           if (toPull.length === 0) {
             onShowToast(
               'info',
-              'Tất cả ảnh trong thư mục OTG đã được đẩy lên QR!'
+              onlySinceBaseline
+                ? 'Không có ảnh mới nào trong thư mục OTG.'
+                : 'Tất cả ảnh trong thư mục OTG đã được đẩy lên QR!'
             );
             return;
           }
@@ -862,13 +939,14 @@ export function usePhotoSync({
     [
       importAndUploadCardTargets,
       isCardPhotoUploaded,
+      isItemInBaseline,
       onShowToast,
       otgDirectoryUri,
       uploadPhotosBatch,
     ]
   );
 
-  // Sync button on OtgTetherConsole: compares card photos vs uploaded photos and uploads ONLY missing ones
+  // Sync button on OtgTetherConsole: compares card photos vs current session + post-End-Session baseline and uploads ONLY new un-uploaded shots
   const handleSyncCameraPhotos = useCallback(async () => {
     if (isSyncingCameraRef.current) return;
 
@@ -876,7 +954,10 @@ export function usePhotoSync({
       isSyncingCameraRef.current = true;
       setIsSyncingCamera(true);
       try {
-        setStatusMessage('Đang đối chiếu danh sách ảnh trên thẻ nhớ máy ảnh...');
+        if (baselineRefreshPromiseRef.current) {
+          await baselineRefreshPromiseRef.current;
+        }
+        setStatusMessage('Đang đối chiếu ảnh mới trên thẻ nhớ máy ảnh...');
         const summary = await getCameraPhotosSummary(0);
 
         if (summary.error) {
@@ -889,13 +970,14 @@ export function usePhotoSync({
           return;
         }
 
-        const allMissing = summary.photos.filter(
-          (item) => !isCardPhotoUploaded(item)
+        const newlyShotMissing = summary.photos.filter(
+          (item) => !isCardPhotoUploaded(item) && !isItemInBaseline(item)
         );
-        if (allMissing.length === 0) {
+
+        if (newlyShotMissing.length === 0) {
           Alert.alert(
-            'Tất cả ảnh đã lên QR',
-            `Toàn bộ ${summary.totalCount} ảnh trên máy ảnh đã có trong phiên QR hiện tại. Bạn có muốn mở thẻ nhớ để xem/chọn lại ảnh không?`,
+            'Không có ảnh mới chưa đồng bộ',
+            `Chưa có ảnh mới chụp nào kể từ lúc kết nối hoặc kết thúc phiên (thẻ có ${summary.totalCount} ảnh trước đó).\n\nChụp ảnh mới trên máy ảnh để tự động đẩy, hoặc bấm "Chọn ảnh trên thẻ" nếu muốn lấy thủ công ảnh cũ.`,
             [
               { text: 'Đóng', style: 'cancel' },
               {
@@ -904,30 +986,17 @@ export function usePhotoSync({
               },
             ]
           );
+          setStatusMessage('Không có ảnh mới nào kể từ lúc kết thúc phiên.');
           return;
         }
 
-        // Prioritize freshly shot photos since plug-in if card also had old pre-existing photos
-        const baselineKeys = initialBaselineKeysRef.current;
-        const newlyShotMissing =
-          baselineKeys.size > 0
-            ? allMissing.filter(
-                (item) => !item.cameraKey || !baselineKeys.has(item.cameraKey)
-              )
-            : allMissing;
-
-        if (newlyShotMissing.length > 0 && newlyShotMissing.length <= 30) {
+        if (newlyShotMissing.length <= 30) {
           await importAndUploadCardTargets(newlyShotMissing);
           return;
         }
 
-        if (allMissing.length <= 30) {
-          await importAndUploadCardTargets(allMissing);
-          return;
-        }
-
         Alert.alert(
-          `Phát hiện ${allMissing.length} ảnh chưa lên QR`,
+          `Phát hiện ${newlyShotMissing.length} ảnh mới chưa lên QR`,
           'Chọn cách đồng bộ vào phiên QR hiện tại (nếu chưa có QR app sẽ tự tạo mới):',
           [
             { text: 'Huỷ', style: 'cancel' },
@@ -937,11 +1006,11 @@ export function usePhotoSync({
             },
             {
               text: 'Sync 20 ảnh mới nhất',
-              onPress: () => void syncCameraUnsyncedBatch(20),
+              onPress: () => void syncCameraUnsyncedBatch(20, true),
             },
             {
-              text: `Sync tất cả (${allMissing.length})`,
-              onPress: () => void syncCameraUnsyncedBatch(0),
+              text: `Sync tất cả (${newlyShotMissing.length})`,
+              onPress: () => void syncCameraUnsyncedBatch(0, true),
             },
           ]
         );
@@ -953,11 +1022,12 @@ export function usePhotoSync({
     }
 
     if (otgDirectoryUri) {
-      await syncCameraUnsyncedBatch(25);
+      await syncCameraUnsyncedBatch(25, true);
     }
   }, [
     importAndUploadCardTargets,
     isCardPhotoUploaded,
+    isItemInBaseline,
     onShowToast,
     openCameraPhotoPicker,
     otgDirectoryUri,
@@ -1162,6 +1232,37 @@ export function usePhotoSync({
 
   const clearSessionPhotos = useCallback(() => {
     pendingUploadQueueRef.current = [];
+
+    // Advance OTG baseline checkpoint to cover all photos already uploaded/on card before ending session,
+    // so subsequent Sync only picks up NEW photos taken after End Session.
+    addCardItemsToBaseline(
+      recentPhotosRef.current.map((p) => ({
+        handle: p.cameraHandle,
+        filename: p.filename,
+        size: p.fileSize,
+        cameraKey: p.cameraKey,
+      }))
+    );
+    for (const k of uploadedCameraKeysSetRef.current) {
+      sessionBaselineTokensRef.current.add(`key:${k}`);
+    }
+    if (usbCameraConnectedRef.current) {
+      void refreshOtgBaselineFromCard();
+    }
+
+    const activeSafDir = otgDirectoryUriRef.current;
+    if (activeSafDir) {
+      void FileSystem.StorageAccessFramework.readDirectoryAsync(activeSafDir)
+        .then((files) => {
+          for (const f of files) {
+            if (/\.(jpe?g)$/i.test(decodeURIComponent(f))) {
+              knownSafFilesSetRef.current.add(f);
+            }
+          }
+        })
+        .catch(() => undefined);
+    }
+
     setRecentPhotos([]);
     setSelectedPhotoIds([]);
     setUploadedPhotoIds([]);
@@ -1177,7 +1278,7 @@ export function usePhotoSync({
       );
     }
     setStatusMessage('Chọn ảnh để upload và tạo mã QR');
-  }, []);
+  }, [addCardItemsToBaseline, refreshOtgBaselineFromCard]);
 
   return {
     recentPhotos,

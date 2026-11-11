@@ -1,4 +1,4 @@
-import { NativeModules, Platform } from 'react-native';
+import { Dimensions, NativeModules, Platform, StatusBar } from 'react-native';
 
 export const USB_OTG_CHANGED_EVENT = 'ShotDropUsbOtgChanged';
 
@@ -67,6 +67,7 @@ interface ShotDropUsbOtgNativeModule {
   importCameraHandles?(
     handles: number[]
   ): Promise<{ photos: ImportedOtgPhoto[]; error?: string }>;
+  getSystemInsets?(): Promise<{ bottom?: number }>;
 }
 
 const NativeUsbOtg = NativeModules.ShotDropUsbOtg as
@@ -222,4 +223,29 @@ export async function importCameraHandles(
       error: err instanceof Error ? err.message : 'Lỗi tải ảnh từ máy ảnh',
     };
   }
+}
+
+export async function getAndroidSystemBottomInset(): Promise<number> {
+  if (Platform.OS !== 'android') return 0;
+
+  const screenH = Dimensions.get('screen').height;
+  const windowH = Dimensions.get('window').height;
+  const heuristicDiff = Math.max(
+    0,
+    screenH - windowH - (StatusBar.currentHeight ?? 0)
+  );
+
+  try {
+    if (NativeUsbOtg && typeof NativeUsbOtg.getSystemInsets === 'function') {
+      const res = await NativeUsbOtg.getSystemInsets();
+      const nativeBottom =
+        typeof res?.bottom === 'number' && Number.isFinite(res.bottom)
+          ? res.bottom
+          : 0;
+      return Math.max(nativeBottom, heuristicDiff, 24);
+    }
+  } catch {
+    // Fallback cleanly below
+  }
+  return Math.max(heuristicDiff, 48);
 }
