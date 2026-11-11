@@ -77,22 +77,33 @@ export const supabase = activeClient;
 
 export const STORAGE_BUCKET = 'shotdrop_photos';
 
-export const RENDER_WEB_URL = 'https://shotdropvn-web.onrender.com';
+export const PRODUCTION_WEB_URL = 'https://web-six-alpha-35.vercel.app';
 
-export const PUBLIC_CLOUDFLARE_WEB_URL =
-  'https://delicious-compression-lived-agriculture.trycloudflare.com';
+export function isUsablePublicWebOrigin(url?: string | null): boolean {
+  const normalized = (url ?? '').trim().replace(/\/$/, '');
+  if (
+    !normalized.startsWith('http://') &&
+    !normalized.startsWith('https://')
+  ) {
+    return false;
+  }
+
+  return (
+    !normalized.includes('localhost') &&
+    !normalized.includes('192.168.') &&
+    !normalized.includes('127.0.0.1') &&
+    !normalized.includes('.trycloudflare.com') &&
+    !normalized.includes('shotdropvn-web.onrender.com') &&
+    !normalized.includes('shotdropvn.onrender.com')
+  );
+}
 
 function resolveDefaultWebOrigin(): string {
   const envUrl = process.env.EXPO_PUBLIC_WEB_URL?.trim();
-  if (
-    envUrl &&
-    !envUrl.includes('localhost') &&
-    !envUrl.includes('192.168.') &&
-    !envUrl.includes('127.0.0.1')
-  ) {
+  if (envUrl && isUsablePublicWebOrigin(envUrl)) {
     return envUrl.replace(/\/$/, '');
   }
-  return PUBLIC_CLOUDFLARE_WEB_URL;
+  return PRODUCTION_WEB_URL;
 }
 
 export const GUEST_WEB_ORIGIN = resolveDefaultWebOrigin();
@@ -101,6 +112,11 @@ export function buildGuestUrl(
   qrCodeHash: string,
   customOrigin?: string
 ): string {
-  const origin = (customOrigin || GUEST_WEB_ORIGIN).replace(/\/$/, '');
+  const candidate = customOrigin?.trim();
+  const origin = (
+    candidate && isUsablePublicWebOrigin(candidate)
+      ? candidate
+      : GUEST_WEB_ORIGIN
+  ).replace(/\/$/, '');
   return `${origin}/s/${qrCodeHash}`;
 }

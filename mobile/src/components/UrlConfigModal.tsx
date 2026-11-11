@@ -4,8 +4,7 @@ import { CloseIcon } from './Icons';
 import { styles } from '../styles/appStyles';
 import { colors } from '../theme/tokens';
 import {
-  PUBLIC_CLOUDFLARE_WEB_URL,
-  RENDER_WEB_URL,
+  PRODUCTION_WEB_URL,
   SUPABASE_PROJECT_URL,
 } from '../lib/supabase';
 
@@ -70,20 +69,11 @@ export const UrlConfigModal: React.FC<UrlConfigModalProps> = ({
 
           <View style={styles.urlModalPresetRow}>
             <Pressable
-              onPress={() => onChangeDraftWebOrigin(RENDER_WEB_URL)}
+              onPress={() => onChangeDraftWebOrigin(PRODUCTION_WEB_URL)}
               style={styles.expandedChipBtn}
             >
               <Text style={styles.expandedChipBtnText}>
-                Render (shotdropvn-web.onrender.com)
-              </Text>
-            </Pressable>
-
-            <Pressable
-              onPress={() => onChangeDraftWebOrigin(PUBLIC_CLOUDFLARE_WEB_URL)}
-              style={styles.expandedChipBtn}
-            >
-              <Text style={styles.expandedChipBtnText}>
-                Cloudflare HTTPS Live
+                Production Web (web-six-alpha-35.vercel.app)
               </Text>
             </Pressable>
           </View>

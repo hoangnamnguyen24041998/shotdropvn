@@ -4,11 +4,11 @@ import * as FileSystem from 'expo-file-system/legacy';
 import type { ActiveSession } from '../types';
 import {
   GUEST_WEB_ORIGIN,
-  RENDER_WEB_URL,
   STORAGE_BUCKET,
   getRuntimeSupabaseAnonKey,
   getSupabaseClient,
   isSupabaseReady,
+  isUsablePublicWebOrigin,
   isValidAnonKey,
   setRuntimeSupabaseAnonKey,
 } from '../lib/supabase';
@@ -92,42 +92,31 @@ export function useActiveSession(options?: {
     void loadSavedAnonKey();
   }, []);
 
-  // Load saved web origin or probe online server
+  // Load saved web origin (discarding legacy trycloudflare/localhost/dead render URLs)
   useEffect(() => {
     async function loadSavedWebOrigin() {
       try {
         const configPath = `${FileSystem.documentDirectory ?? ''}shotdrop_web_origin.txt`;
         const info = await FileSystem.getInfoAsync(configPath);
         if (info.exists) {
-          const saved = (await FileSystem.readAsStringAsync(configPath)).trim();
-          if (
-            saved.startsWith('http') &&
-            !saved.includes('localhost') &&
-            !saved.includes('192.168.') &&
-            !saved.includes('127.0.0.1')
-          ) {
+          const saved = (await FileSystem.readAsStringAsync(configPath))
+            .trim()
+            .replace(/\/$/, '');
+          if (isUsablePublicWebOrigin(saved)) {
             setWebOrigin(saved);
             setDraftWebOrigin(saved);
             webOriginRef.current = saved;
             return;
           }
+          await FileSystem.deleteAsync(configPath, { idempotent: true });
         }
       } catch {
-        // Ignore read error
+        // Ignore read/delete error and keep production default
       }
 
-      try {
-        const res = await fetch(`${RENDER_WEB_URL}/api/sync`, {
-          method: 'GET',
-        });
-        if (res.ok) {
-          setWebOrigin(RENDER_WEB_URL);
-          setDraftWebOrigin(RENDER_WEB_URL);
-          webOriginRef.current = RENDER_WEB_URL;
-        }
-      } catch {
-        // Keep default
-      }
+      setWebOrigin(GUEST_WEB_ORIGIN);
+      setDraftWebOrigin(GUEST_WEB_ORIGIN);
+      webOriginRef.current = GUEST_WEB_ORIGIN;
     }
     void loadSavedWebOrigin();
   }, []);
@@ -137,7 +126,7 @@ export function useActiveSession(options?: {
     if (!cleaned.startsWith('http://') && !cleaned.startsWith('https://')) {
       Alert.alert(
         'URL không hợp lệ',
-        'Vui lòng nhập URL bắt đầu bằng https:// (ví dụ: https://shotdropvn.vercel.app)'
+        'Vui lòng nhập URL bắt đầu bằng https:// (ví dụ: https://web-six-alpha-35.vercel.app)'
       );
       return;
     }

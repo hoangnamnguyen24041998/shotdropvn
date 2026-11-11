@@ -29,8 +29,8 @@ import { ToastBanner } from './src/components/ToastBanner';
 // Styles
 import { styles } from './src/styles/appStyles';
 
-export const APP_VERSION = '1.2.9';
-export const APP_BUILD = 12;
+export const APP_VERSION = '1.2.10';
+export const APP_BUILD = 13;
 
 export default function App() {
   const { toast, showToast } = useToast();
