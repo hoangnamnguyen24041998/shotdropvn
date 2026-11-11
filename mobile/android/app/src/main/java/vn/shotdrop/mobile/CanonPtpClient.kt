@@ -18,11 +18,9 @@ import java.util.Locale
  * Low-level ISO 15740 USB Bulk PTP client with Canon EOS (0x91xx) extensions.
  *
  * Designed to keep ONE persistent PTP session open while connected over USB OTG so:
- *  - Canon cameras in Live View remain responsive without Open/CloseSession storms.
  *  - New photos trigger instant event-based downloads (ObjectAddedEx / RequestObjectTransfer)
- *    or fallback object-handle diffs.
- *  - Live View EVF JPEG frames (0x9153), Autofocus (0x9154 / 0x9128), Remote Shutter (0x9128/0x9129),
- *    and Card JPEG Exports work over the same serialized USB bulk connection.
+ *    or fast object-handle diffs without Open/CloseSession storms.
+ *  - Thumbnail previews (0x100A) and Card JPEG Exports work over the serialized USB bulk connection.
  */
 class CanonPtpClient(
   val device: UsbDevice,
@@ -69,17 +67,12 @@ class CanonPtpClient(
 
     // Canon EOS Vendor Operation Codes (0x91xx)
     private const val OC_CANON_EOS_GET_PARTIAL_OBJECT = 0x9107
-    private const val OC_CANON_EOS_REMOTE_RELEASE = 0x910F
     private const val OC_CANON_EOS_SET_DEVICE_PROP_VALUE_EX = 0x9110
     private const val OC_CANON_EOS_SET_REMOTE_MODE = 0x9114
     private const val OC_CANON_EOS_SET_EVENT_MODE = 0x9115
     private const val OC_CANON_EOS_GET_EVENT = 0x9116
     private const val OC_CANON_EOS_TRANSFER_COMPLETE = 0x9117
     private const val OC_CANON_EOS_PC_HDD_CAPACITY = 0x911A
-    private const val OC_CANON_EOS_REMOTE_RELEASE_ON = 0x9128
-    private const val OC_CANON_EOS_REMOTE_RELEASE_OFF = 0x9129
-    private const val OC_CANON_EOS_GET_VIEWFINDER_DATA = 0x9153
-    private const val OC_CANON_EOS_DO_AF = 0x9154
 
     // Canon EOS Event Codes (0xC1xx)
     private const val EC_CANON_EOS_OBJECT_ADDED_EX = 0xC181
@@ -92,21 +85,9 @@ class CanonPtpClient(
 
     // Canon EOS Device Properties (0xD1xx)
     private const val DPC_CANON_EOS_CAPTURE_DESTINATION = 0xD11C
-    private const val DPC_CANON_EOS_EVF_OUTPUT_DEVICE = 0xD1B0
-    private const val DPC_CANON_EOS_EVF_MODE = 0xD1B1
-
-    // Canon EVF Output flags
-    const val EVF_OUTPUT_TFT = 0x01
-    const val EVF_OUTPUT_PC = 0x02
-    const val EVF_OUTPUT_TFT_AND_PC = 0x03
 
     // Canon CaptureDestination flags
     private const val CAPTURE_DEST_HD = 0x04
-
-    // Canon Live View Data Blob segment IDs
-    private const val LV_SEG_JPEG_1 = 1
-    private const val LV_SEG_JPEG_9 = 9
-    private const val LV_SEG_JPEG_11 = 11
   }
 
   data class ObjectRecord(
@@ -118,9 +99,7 @@ class CanonPtpClient(
   )
 
   data class EventDrainResult(
-    val addedObjects: List<ObjectRecord>,
-    val evfMode: Int?,
-    val evfOutputDevice: Int?
+    val addedObjects: List<ObjectRecord>
   )
 
   private data class PtpContainer(
@@ -148,16 +127,6 @@ class CanonPtpClient(
   var modelName: String? = null
     private set
   var isCanonEos: Boolean = false
-    private set
-  var supportsLiveView: Boolean = false
-    private set
-  var supportsRemoteCapture: Boolean = false
-    private set
-  var supportsAutoFocus: Boolean = false
-    private set
-  @Volatile var evfMode: Int = 0
-    private set
-  @Volatile var evfOutputDevice: Int = 0
     private set
   @Volatile var captureDestination: Int = 0
     private set
@@ -224,16 +193,7 @@ class CanonPtpClient(
 
     isCanonEos = supportedOperations.contains(OC_CANON_EOS_GET_EVENT) ||
       supportedOperations.contains(OC_CANON_EOS_SET_REMOTE_MODE) ||
-      (device.vendorId == 0x04A9 && supportedOperations.contains(OC_CANON_EOS_GET_VIEWFINDER_DATA))
-
-    supportsLiveView = supportedOperations.contains(OC_CANON_EOS_GET_VIEWFINDER_DATA)
-    supportsRemoteCapture =
-      supportedOperations.contains(OC_CANON_EOS_REMOTE_RELEASE_ON) ||
-      supportedOperations.contains(OC_CANON_EOS_REMOTE_RELEASE) ||
-      supportedOperations.contains(OC_INITIATE_CAPTURE)
-    supportsAutoFocus =
-      supportedOperations.contains(OC_CANON_EOS_DO_AF) ||
-      supportedOperations.contains(OC_CANON_EOS_REMOTE_RELEASE_ON)
+      (device.vendorId == 0x04A9 && supportedOperations.contains(OC_CANON_EOS_GET_PARTIAL_OBJECT))
 
     if (isCanonEos) {
       ensureCanonRemoteInitialized()
@@ -275,13 +235,6 @@ class CanonPtpClient(
     val intf = usbInterface
     if (isOpen && conn != null) {
       try {
-        if (isCanonEos && isRemoteModeInitialized && evfOutputDevice != EVF_OUTPUT_TFT &&
-          supportedOperations.contains(OC_CANON_EOS_SET_DEVICE_PROP_VALUE_EX) &&
-          evfMode == 1 &&
-          (evfOutputDevice and EVF_OUTPUT_PC) != 0
-        ) {
-          setCanonPropertyInt32(DPC_CANON_EOS_EVF_OUTPUT_DEVICE, EVF_OUTPUT_TFT)
-        }
         if (isCanonEos && isRemoteModeInitialized &&
           supportedOperations.contains(OC_CANON_EOS_SET_REMOTE_MODE)
         ) {
@@ -311,280 +264,9 @@ class CanonPtpClient(
     isRemoteModeInitialized = false
   }
 
-  fun startLiveView(): Boolean {
-    if (!isHealthy() || !isCanonEos || !supportsLiveView) return false
-    ensureCanonRemoteInitialized()
-
-    // Ensure Live View mode (0xD1B1) is enabled if not already active on camera
-    if (evfMode != 1) {
-      val rcMode = setCanonPropertyInt32(DPC_CANON_EOS_EVF_MODE, 1)
-      if (rcMode == RC_OK) {
-        evfMode = 1
-      }
-      Thread.sleep(180)
-    }
-
-    // Prefer TFT + PC (0x03) so both the camera's rear screen AND the phone show Live View;
-    // fall back to PC-only (0x02) if the camera body rejects simultaneous TFT+PC.
-    if ((evfOutputDevice and EVF_OUTPUT_PC) == 0) {
-      var rcOut = setCanonPropertyInt32(DPC_CANON_EOS_EVF_OUTPUT_DEVICE, EVF_OUTPUT_TFT_AND_PC)
-      if (rcOut == RC_OK) {
-        evfOutputDevice = EVF_OUTPUT_TFT_AND_PC
-      } else {
-        rcOut = setCanonPropertyInt32(DPC_CANON_EOS_EVF_OUTPUT_DEVICE, EVF_OUTPUT_PC)
-        if (rcOut == RC_OK) {
-          evfOutputDevice = EVF_OUTPUT_PC
-        } else {
-          return false
-        }
-      }
-    }
-
-    drainCanonEvents()
-    return true
-  }
-
-  fun stopLiveView(): Boolean {
-    if (!isHealthy() || !isCanonEos) return false
-    if ((evfOutputDevice and EVF_OUTPUT_PC) != 0 &&
-      supportedOperations.contains(OC_CANON_EOS_SET_DEVICE_PROP_VALUE_EX)
-    ) {
-      val rc = setCanonPropertyInt32(DPC_CANON_EOS_EVF_OUTPUT_DEVICE, EVF_OUTPUT_TFT)
-      if (rc == RC_OK) {
-        evfOutputDevice = EVF_OUTPUT_TFT
-        return true
-      }
-    }
-    return false
-  }
-
-  /**
-   * Pulls one Live View JPEG frame via 0x9153 (GetViewFinderData).
-   * Returns raw JPEG bytes or null if the camera is briefly busy/mirror transitioning.
-   */
-  fun getLiveViewJpegFrame(drainEvents: Boolean = false): ByteArray? {
-    if (!isHealthy() || !isCanonEos || !supportsLiveView) return null
-
-    if (drainEvents && supportedOperations.contains(OC_CANON_EOS_GET_EVENT)) {
-      val evtRes = executeGetData(OC_CANON_EOS_GET_EVENT, intArrayOf(), timeoutMs = 1_200)
-      if (evtRes.responseCode == RC_OK && evtRes.data.isNotEmpty()) {
-        parseCanonEventsBuffer(evtRes.data)
-      }
-    }
-
-    var res = executeGetData(
-      OC_CANON_EOS_GET_VIEWFINDER_DATA,
-      intArrayOf(0x00200000, 0, 0),
-      timeoutMs = 2_500
-    )
-    if (res.responseCode == RC_INVALID_PARAMETER || res.responseCode == RC_PARAMETER_NOT_SUPPORTED) {
-      res = executeGetData(
-        OC_CANON_EOS_GET_VIEWFINDER_DATA,
-        intArrayOf(0x00100000, 0, 0),
-        timeoutMs = 2_500
-      )
-    }
-
-    if (res.responseCode == RC_CANON_NOT_READY || res.responseCode == RC_DEVICE_BUSY) {
-      return null
-    }
-    if (res.responseCode != RC_OK || res.data.isEmpty()) {
-      return null
-    }
-
-    return extractJpegFromViewFinderPayload(res.data)
-  }
-
-  fun triggerAutoFocus(): Boolean {
-    if (!isHealthy()) return false
-    if (isCanonEos && supportedOperations.contains(OC_CANON_EOS_DO_AF)) {
-      val rc = executeWithBusyRetry(OC_CANON_EOS_DO_AF, intArrayOf(), maxAttempts = 4)
-      drainCanonEvents()
-      return rc == RC_OK
-    }
-    if (isCanonEos && supportedOperations.contains(OC_CANON_EOS_REMOTE_RELEASE_ON)) {
-      val rcOn = executeWithBusyRetry(
-        OC_CANON_EOS_REMOTE_RELEASE_ON,
-        intArrayOf(1, 0),
-        maxAttempts = 4
-      )
-      Thread.sleep(220)
-      drainCanonEvents()
-      executeWithBusyRetry(OC_CANON_EOS_REMOTE_RELEASE_OFF, intArrayOf(1), maxAttempts = 4)
-      drainCanonEvents()
-      return rcOn == RC_OK
-    }
-    return false
-  }
-
-  /**
-   * Triggers a remote shutter release and waits for Canon event delivery (or storage handle diff),
-   * returning all newly captured JPEG objects ready for import.
-   */
-  fun triggerCaptureAndWaitObjects(withAf: Boolean): Pair<Boolean, List<ObjectRecord>> {
-    if (!isHealthy()) return Pair(false, emptyList())
-
-    val discovered = mutableListOf<ObjectRecord>()
-    val seenHandles = HashSet<Int>()
-
-    // Snapshot baseline storage handles only if Canon EOS event mode is unavailable
-    val baselineHandles = if (!isCanonEos) getAllJpegHandles().toSet() else emptySet()
-
-    // Clear stale events right before triggering shutter
-    if (isCanonEos) {
-      val pre = drainCanonEvents()
-      for (obj in pre.addedObjects) {
-        if (seenHandles.add(obj.handle)) discovered.add(obj)
-      }
-    }
-
-    val triggered = executeShutterCommand(withAf)
-    if (!triggered) {
-      return Pair(false, emptyList())
-    }
-
-    if (isCanonEos) {
-      val deadlineMs = System.currentTimeMillis() + 9_000L
-      var sawRawNonJpegAtMs = 0L
-
-      while (System.currentTimeMillis() < deadlineMs) {
-        val drained = drainCanonEvents()
-        for (obj in drained.addedObjects) {
-          if (isJpegObject(obj)) {
-            if (seenHandles.add(obj.handle)) {
-              discovered.add(obj)
-            }
-          } else {
-            // In RAW+JPEG or RAW-only mode, acknowledge SDRAM RAW transfer immediately so camera doesn't stall
-            if (obj.needsTransferComplete) {
-              transferComplete(obj.handle)
-            }
-            if (sawRawNonJpegAtMs == 0L) {
-              sawRawNonJpegAtMs = System.currentTimeMillis()
-            }
-          }
-        }
-
-        if (discovered.isNotEmpty()) {
-          // Wait briefly once more to catch any companion JPEG if burst/RAW+JPEG split events
-          Thread.sleep(120)
-          val extra = drainCanonEvents()
-          for (obj in extra.addedObjects) {
-            if (isJpegObject(obj) && seenHandles.add(obj.handle)) {
-              discovered.add(obj)
-            } else if (obj.needsTransferComplete) {
-              transferComplete(obj.handle)
-            }
-          }
-          break
-        }
-
-        if (sawRawNonJpegAtMs > 0L && (System.currentTimeMillis() - sawRawNonJpegAtMs > 2_500L)) {
-          // Camera only emitted RAW and never sent a JPEG after 2.5s
-          break
-        }
-        Thread.sleep(100)
-      }
-    } else {
-      val deadlineMs = System.currentTimeMillis() + 7_000L
-      while (System.currentTimeMillis() < deadlineMs) {
-        val currentHandles = getAllJpegHandles()
-        val added = currentHandles.filter { !baselineHandles.contains(it) }
-        if (added.isNotEmpty()) {
-          for (h in added) {
-            val info = getObjectInfo(h)
-            discovered.add(
-              ObjectRecord(
-                handle = h,
-                format = info?.first ?: FORMAT_EXIF_JPEG,
-                size = info?.second ?: 0L,
-                filename = info?.third ?: "OTG_$h.JPG",
-                needsTransferComplete = false
-              )
-            )
-          }
-          break
-        }
-        Thread.sleep(250)
-      }
-    }
-
-    return Pair(true, discovered)
-  }
-
-  private fun executeShutterCommand(withAf: Boolean): Boolean {
-    if (isCanonEos && supportedOperations.contains(OC_CANON_EOS_REMOTE_RELEASE_ON)) {
-      val afModifier = if (withAf) 0 else 1
-
-      // Standard Canon EOS DSLRs (6D, 5D, 70D, 80D, R, etc.): half press (1), full press (2)
-      val rcHalf = executeWithBusyRetry(
-        OC_CANON_EOS_REMOTE_RELEASE_ON,
-        intArrayOf(1, afModifier),
-        maxAttempts = 6
-      )
-
-      if (rcHalf == RC_INVALID_PARAMETER || rcHalf == RC_PARAMETER_NOT_SUPPORTED) {
-        // Canon EOS M single-stage instant release (3, 0)
-        val rcM = executeWithBusyRetry(
-          OC_CANON_EOS_REMOTE_RELEASE_ON,
-          intArrayOf(3, 0),
-          maxAttempts = 6
-        )
-        Thread.sleep(120)
-        executeWithBusyRetry(OC_CANON_EOS_REMOTE_RELEASE_OFF, intArrayOf(3), maxAttempts = 6)
-        return rcM == RC_OK
-      }
-
-      if (rcHalf != RC_OK) {
-        return false
-      }
-
-      if (withAf) {
-        Thread.sleep(220)
-        drainCanonEvents()
-      }
-
-      var rcFull = executeWithBusyRetry(
-        OC_CANON_EOS_REMOTE_RELEASE_ON,
-        intArrayOf(2, afModifier),
-        maxAttempts = 8
-      )
-
-      // If AF half-press didn't achieve focus lock and blocked full-press, retry full-press cleanly
-      if (rcFull != RC_OK && withAf) {
-        executeWithBusyRetry(OC_CANON_EOS_REMOTE_RELEASE_OFF, intArrayOf(1), maxAttempts = 4)
-        Thread.sleep(80)
-        executeWithBusyRetry(OC_CANON_EOS_REMOTE_RELEASE_ON, intArrayOf(1, 1), maxAttempts = 5)
-        rcFull = executeWithBusyRetry(
-          OC_CANON_EOS_REMOTE_RELEASE_ON,
-          intArrayOf(2, 1),
-          maxAttempts = 6
-        )
-      }
-
-      Thread.sleep(80)
-      executeWithBusyRetry(OC_CANON_EOS_REMOTE_RELEASE_OFF, intArrayOf(2), maxAttempts = 6)
-      executeWithBusyRetry(OC_CANON_EOS_REMOTE_RELEASE_OFF, intArrayOf(1), maxAttempts = 6)
-
-      return rcFull == RC_OK
-    }
-
-    if (isCanonEos && supportedOperations.contains(OC_CANON_EOS_REMOTE_RELEASE)) {
-      val rc = executeWithBusyRetry(OC_CANON_EOS_REMOTE_RELEASE, intArrayOf(), maxAttempts = 6)
-      return rc == RC_OK
-    }
-
-    if (supportedOperations.contains(OC_INITIATE_CAPTURE)) {
-      val rc = executeWithBusyRetry(OC_INITIATE_CAPTURE, intArrayOf(0, 0), maxAttempts = 5)
-      return rc == RC_OK
-    }
-
-    return false
-  }
-
   fun drainCanonEvents(): EventDrainResult {
     if (!isHealthy() || !isCanonEos || !supportedOperations.contains(OC_CANON_EOS_GET_EVENT)) {
-      return EventDrainResult(emptyList(), null, null)
+      return EventDrainResult(emptyList())
     }
 
     val collected = mutableListOf<ObjectRecord>()
@@ -605,11 +287,7 @@ class CanonPtpClient(
       }
     }
 
-    return EventDrainResult(
-      addedObjects = collected,
-      evfMode = evfMode,
-      evfOutputDevice = evfOutputDevice
-    )
+    return EventDrainResult(addedObjects = collected)
   }
 
   fun transferComplete(handle: Int) {
@@ -1250,10 +928,8 @@ class CanonPtpClient(
           if (size >= 14) {
             val dpc = getIntLE(data, offset + 0x08)
             val value = if (size >= 16) getIntLE(data, offset + 0x0C) else getUInt16LE(data, offset + 0x0C)
-            when (dpc) {
-              DPC_CANON_EOS_EVF_MODE -> evfMode = value
-              DPC_CANON_EOS_EVF_OUTPUT_DEVICE -> evfOutputDevice = value
-              DPC_CANON_EOS_CAPTURE_DESTINATION -> captureDestination = value
+            if (dpc == DPC_CANON_EOS_CAPTURE_DESTINATION) {
+              captureDestination = value
             }
           }
         }
@@ -1267,55 +943,6 @@ class CanonPtpClient(
     }
 
     return sawValidRecord
-  }
-
-  private fun extractJpegFromViewFinderPayload(data: ByteArray): ByteArray? {
-    var pos = 0
-    while (pos + 8 <= data.size) {
-      val segLen = getIntLE(data, pos)
-      val segType = getIntLE(data, pos + 4)
-      if (segLen < 8 || pos + segLen > data.size) break
-
-      if (segType == LV_SEG_JPEG_1 || segType == LV_SEG_JPEG_9 || segType == LV_SEG_JPEG_11) {
-        val segStart = pos + 8
-        val segEnd = pos + segLen
-        val soi = findJpegMarker(data, segStart, segEnd, 0xD8.toByte())
-        if (soi >= 0) {
-          val eoi = findLastJpegEoi(data, soi + 2, segEnd)
-          val copyEnd = if (eoi > soi) eoi else segEnd
-          return data.copyOfRange(soi, copyEnd)
-        }
-      }
-
-      pos += segLen
-    }
-
-    // Fallback scan for embedded SOI..EOI anywhere in payload
-    val soi = findJpegMarker(data, 0, data.size, 0xD8.toByte())
-    if (soi >= 0) {
-      val eoi = findLastJpegEoi(data, soi + 2, data.size)
-      val copyEnd = if (eoi > soi) eoi else data.size
-      return data.copyOfRange(soi, copyEnd)
-    }
-    return null
-  }
-
-  private fun findJpegMarker(data: ByteArray, start: Int, end: Int, markerByte: Byte): Int {
-    for (i in start until (end - 1)) {
-      if (data[i] == 0xFF.toByte() && data[i + 1] == markerByte) {
-        return i
-      }
-    }
-    return -1
-  }
-
-  private fun findLastJpegEoi(data: ByteArray, start: Int, end: Int): Int {
-    for (i in (end - 2) downTo start) {
-      if (data[i] == 0xFF.toByte() && data[i + 1] == 0xD9.toByte()) {
-        return i + 2
-      }
-    }
-    return -1
   }
 
   private fun unpackIntArray(data: ByteArray): List<Int> {

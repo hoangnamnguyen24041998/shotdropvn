@@ -2,11 +2,9 @@ import React from 'react';
 import { Pressable, Text, View } from 'react-native';
 import {
   BoltIcon,
-  CameraApertureIcon,
   DownloadTrayIcon,
   UsbCableIcon,
 } from './Icons';
-import { CanonLiveViewSurface } from './CanonLiveViewSurface';
 import { styles } from '../styles/appStyles';
 import { colors } from '../theme/tokens';
 import type { UsbCameraStatus } from '../types';
@@ -17,17 +15,11 @@ interface OtgTetherConsoleProps {
   otgDirectoryUri: string | null;
   uploading: boolean;
   statusMessage: string;
-  isLiveViewActive: boolean;
-  isFocusingOtg: boolean;
-  isCapturingOtg: boolean;
   isSyncingCamera: boolean;
   onToggleOtgLive: () => void;
   onConnectOtg: () => void;
   onSelectOtgFolder: () => void;
   onSyncCameraPhotos: () => void;
-  onToggleLiveView: () => void;
-  onAutoFocusOtg: () => void;
-  onCaptureLiveViewPhoto: () => void;
 }
 
 export const OtgTetherConsole: React.FC<OtgTetherConsoleProps> = ({
@@ -36,17 +28,11 @@ export const OtgTetherConsole: React.FC<OtgTetherConsoleProps> = ({
   otgDirectoryUri,
   uploading,
   statusMessage,
-  isLiveViewActive,
-  isFocusingOtg,
-  isCapturingOtg,
   isSyncingCamera,
   onToggleOtgLive,
   onConnectOtg,
   onSelectOtgFolder,
   onSyncCameraPhotos,
-  onToggleLiveView,
-  onAutoFocusOtg,
-  onCaptureLiveViewPhoto,
 }) => {
   // Only render OTG console when a physical USB device / Hub / camera / SAF OTG folder is present
   const hasUsbActivity =
@@ -160,7 +146,7 @@ export const OtgTetherConsole: React.FC<OtgTetherConsoleProps> = ({
           </View>
 
           <Text style={styles.otgSubtext} numberOfLines={2}>
-            {`Thẻ nhớ có ${usbCameraStatus.totalPhotosOnCard} ảnh JPEG. Ảnh mới tự đẩy thẳng lên phiên QR.`}
+            {`Thẻ nhớ có ${usbCameraStatus.totalPhotosOnCard} ảnh JPEG. Ảnh chụp mới sẽ tự động đẩy lên cùng phiên QR.`}
           </Text>
         </View>
 
@@ -194,110 +180,24 @@ export const OtgTetherConsole: React.FC<OtgTetherConsoleProps> = ({
         </Pressable>
       </View>
 
-      {/* Hardware-accelerated native Live View viewfinder (zero JS re-render / flicker) */}
-      {usbCameraStatus.supportsLiveView && isLiveViewActive && (
-        <View style={styles.otgLiveViewFrame}>
-          <CanonLiveViewSurface style={styles.otgLiveViewImage} />
-          <View style={styles.otgLiveViewBadge}>
-            <View style={styles.otgLiveViewDot} />
-            <Text style={styles.otgLiveViewBadgeText}>LIVE VIEW</Text>
-          </View>
-          {isCapturingOtg && (
-            <View style={styles.otgCaptureOverlayBadge}>
-              <Text style={styles.otgCaptureOverlayText}>
-                Đang chụp & xuất ảnh...
-              </Text>
-            </View>
-          )}
-        </View>
-      )}
-
-      {/* Remote Live View / AF / Shutter Controls (Canon EOS PTP) */}
-      {(usbCameraStatus.supportsLiveView ||
-        usbCameraStatus.supportsRemoteCapture) && (
-        <View style={styles.otgRemoteControlsRow}>
-          {usbCameraStatus.supportsAutoFocus && (
-            <Pressable
-              onPress={onAutoFocusOtg}
-              disabled={isFocusingOtg || isCapturingOtg}
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.otgAfBtn,
-                pressed && styles.subtlePressed,
-                (isFocusingOtg || isCapturingOtg) &&
-                  styles.otgShutterBtnDisabled,
-              ]}
-            >
-              <Text style={styles.otgAfBtnText}>
-                {isFocusingOtg ? 'AF...' : 'AF'}
-              </Text>
-            </Pressable>
-          )}
-
-          {usbCameraStatus.supportsRemoteCapture && (
-            <Pressable
-              onPress={onCaptureLiveViewPhoto}
-              disabled={isCapturingOtg}
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.otgShutterBtn,
-                pressed && styles.primaryPressed,
-                isCapturingOtg && styles.otgShutterBtnDisabled,
-              ]}
-            >
-              <CameraApertureIcon size={16} color="#FFFFFF" />
-              <Text style={styles.otgShutterBtnText}>
-                {isCapturingOtg ? 'Đang chụp...' : 'Chụp Live View'}
-              </Text>
-            </Pressable>
-          )}
-
-          {usbCameraStatus.supportsLiveView && (
-            <Pressable
-              onPress={onToggleLiveView}
-              disabled={isCapturingOtg}
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.otgAfBtn,
-                pressed && styles.subtlePressed,
-              ]}
-            >
-              <Text style={styles.otgAfBtnText}>
-                {isLiveViewActive ? 'Tắt LV' : 'Live View'}
-              </Text>
-            </Pressable>
-          )}
-        </View>
-      )}
-
-      {/* Sync camera card photos into active (or new) QR session */}
+      {/* Single primary Sync button: compares card photos vs uploaded session photos and uploads missing ones */}
       <View style={styles.otgActionButtonsRow}>
         <Pressable
-          onPress={onConnectOtg}
-          disabled={isSyncingCamera || isCapturingOtg}
-          accessibilityRole="button"
-          style={({ pressed }) => [
-            styles.otgSecondaryBtn,
-            pressed && styles.subtlePressed,
-          ]}
-        >
-          <UsbCableIcon size={16} color={colors.textPrimary} />
-          <Text style={styles.otgSecondaryBtnText}>Kiểm tra OTG</Text>
-        </Pressable>
-
-        <Pressable
           onPress={onSyncCameraPhotos}
-          disabled={isSyncingCamera || isCapturingOtg}
+          disabled={isSyncingCamera || uploading}
           accessibilityRole="button"
+          accessibilityLabel="Sync ảnh mới nhất từ máy ảnh"
           style={({ pressed }) => [
             styles.otgPrimaryBtn,
             pressed && styles.primaryPressed,
-            (isSyncingCamera || isCapturingOtg) && styles.otgShutterBtnDisabled,
+            (isSyncingCamera || uploading) && styles.otgBtnDisabled,
           ]}
         >
           <DownloadTrayIcon size={16} color={colors.textInverse} />
           <Text style={styles.otgPrimaryBtnText}>
-            {isSyncingCamera ? 'Đang đồng bộ...' : 'Sync ảnh từ máy ảnh'}
+            {isSyncingCamera
+              ? 'Đang đối chiếu & đồng bộ...'
+              : 'Sync ảnh mới nhất từ máy ảnh'}
           </Text>
         </Pressable>
       </View>

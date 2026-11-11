@@ -14,6 +14,7 @@ import {
 } from '../lib/supabase';
 
 const SUPABASE_KEY_FILE = 'shotdrop_supabase_anon_key.txt';
+const ACTIVE_SESSION_FILE = 'shotdrop_active_session.json';
 
 function generateQrHash(): string {
   return Math.random().toString(36).substring(2, 8).toLowerCase();
@@ -45,10 +46,20 @@ export class SupabaseNotConfiguredError extends Error {
 export function useActiveSession(options?: {
   onShowToast?: (type: 'success' | 'error' | 'info', message: string) => void;
   onSessionEnded?: () => void;
+  onSessionRestored?: (session: ActiveSession) => void;
 }) {
+  const onShowToastRef = useRef(options?.onShowToast);
+  const onSessionEndedRef = useRef(options?.onSessionEnded);
+  const onSessionRestoredRef = useRef(options?.onSessionRestored);
+  onShowToastRef.current = options?.onShowToast;
+  onSessionEndedRef.current = options?.onSessionEnded;
+  onSessionRestoredRef.current = options?.onSessionRestored;
+
   const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
   const activeSessionRef = useRef<ActiveSession | null>(activeSession);
   const creatingSessionPromiseRef = useRef<Promise<ActiveSession> | null>(null);
+  const [endingSession, setEndingSession] = useState<boolean>(false);
+  const endingSessionRef = useRef<boolean>(false);
 
   // Web Origin Configuration
   const [webOrigin, setWebOrigin] = useState<string>(GUEST_WEB_ORIGIN);
@@ -72,9 +83,29 @@ export function useActiveSession(options?: {
     webOriginRef.current = webOrigin;
   }, [webOrigin]);
 
-  // Load saved anon key on startup
+  const persistActiveSession = useCallback(
+    async (session: ActiveSession | null) => {
+      const sessionPath = `${FileSystem.documentDirectory ?? ''}${ACTIVE_SESSION_FILE}`;
+      if (!sessionPath) return;
+      try {
+        if (!session) {
+          await FileSystem.deleteAsync(sessionPath, { idempotent: true });
+        } else {
+          await FileSystem.writeAsStringAsync(
+            sessionPath,
+            JSON.stringify(session)
+          );
+        }
+      } catch {
+        // Ignore persistence error
+      }
+    },
+    []
+  );
+
+  // Load saved anon key and restore any un-ended active session verified against Supabase
   useEffect(() => {
-    async function loadSavedAnonKey() {
+    async function initKeyAndRestoreSession() {
       try {
         const keyPath = `${FileSystem.documentDirectory ?? ''}${SUPABASE_KEY_FILE}`;
         const info = await FileSystem.getInfoAsync(keyPath);
@@ -89,8 +120,43 @@ export function useActiveSession(options?: {
       } catch {
         // Ignore read error
       }
+
+      const sessionPath = `${FileSystem.documentDirectory ?? ''}${ACTIVE_SESSION_FILE}`;
+      try {
+        const info = await FileSystem.getInfoAsync(sessionPath);
+        if (!info.exists || !isSupabaseReady()) return;
+
+        const raw = await FileSystem.readAsStringAsync(sessionPath);
+        const parsed = JSON.parse(raw) as Partial<ActiveSession> | null;
+        if (!parsed?.id || !parsed?.qr_code_hash) {
+          await FileSystem.deleteAsync(sessionPath, { idempotent: true });
+          return;
+        }
+
+        const { data, error } = await getSupabaseClient()
+          .from('sessions')
+          .select('*')
+          .eq('id', parsed.id)
+          .maybeSingle();
+
+        if (
+          !error &&
+          data &&
+          data.is_active !== false &&
+          data.ended_at == null
+        ) {
+          const restored = data as ActiveSession;
+          activeSessionRef.current = restored;
+          setActiveSession(restored);
+          onSessionRestoredRef.current?.(restored);
+        } else if (!error && !data) {
+          await FileSystem.deleteAsync(sessionPath, { idempotent: true });
+        }
+      } catch {
+        // Keep clean standby state if restore check fails
+      }
     }
-    void loadSavedAnonKey();
+    void initKeyAndRestoreSession();
   }, []);
 
   // Load saved web origin (discarding legacy trycloudflare/localhost/dead render URLs)
@@ -226,6 +292,7 @@ export function useActiveSession(options?: {
 
         activeSessionRef.current = createdSession;
         setActiveSession(createdSession);
+        await persistActiveSession(createdSession);
         return createdSession;
       })();
 
@@ -240,75 +307,136 @@ export function useActiveSession(options?: {
         }
       }
     },
-    []
+    [persistActiveSession]
   );
 
   const handleEndSession = useCallback(async () => {
+    if (endingSessionRef.current) return;
+
     const sessionToEnd = activeSessionRef.current || activeSession;
+    endingSessionRef.current = true;
+    setEndingSession(true);
 
-    setActiveSession(null);
-    activeSessionRef.current = null;
-    options?.onSessionEnded?.();
-    options?.onShowToast?.('info', 'Đã kết thúc phiên chụp.');
-
-    if (sessionToEnd?.id) {
-      try {
+    try {
+      if (isSupabaseReady()) {
         const client = getSupabaseClient();
-        if (client) {
-          try {
-            const { data: storageFiles } = await client.storage
-              .from(STORAGE_BUCKET)
-              .list(sessionToEnd.id);
-            if (storageFiles && storageFiles.length > 0) {
-              const filePaths = storageFiles.map(
-                (f) => `${sessionToEnd.id}/${f.name}`
-              );
-              await client.storage.from(STORAGE_BUCKET).remove(filePaths);
-            }
-          } catch (storageErr) {
-            console.warn('[Supabase Storage] Lỗi xoá file phiên:', storageErr);
-          }
 
-          try {
-            await client
-              .from('photos')
-              .delete()
-              .eq('session_id', sessionToEnd.id);
-          } catch (pErr) {
-            console.warn('[Supabase Photos] Lỗi xoá rows ảnh:', pErr);
-          }
+        // 1. Delete ALL files & session folders from Storage bucket
+        const pathsToRemove = new Set<string>();
+        const { data: rootEntries, error: rootListErr } = await client.storage
+          .from(STORAGE_BUCKET)
+          .list('', { limit: 1000 });
+        if (rootListErr) {
+          throw new Error(
+            `Không đọc được kho ảnh để dọn dẹp: ${rootListErr.message}`
+          );
+        }
 
-          const { error: delErr } = await client
-            .from('sessions')
-            .delete()
-            .eq('id', sessionToEnd.id);
-          if (delErr) {
-            console.warn('[Supabase Sessions] Lỗi xoá session row:', delErr);
+        const folderNames = new Set<string>();
+        if (sessionToEnd?.id) {
+          folderNames.add(sessionToEnd.id);
+        }
+
+        for (const entry of rootEntries ?? []) {
+          if (!entry.name) continue;
+          if (!entry.id) {
+            folderNames.add(entry.name);
+          } else {
+            pathsToRemove.add(entry.name);
           }
         }
-      } catch (err) {
-        console.warn('[Supabase] Lỗi dọn dẹp kết thúc session:', err);
+
+        for (const folder of folderNames) {
+          const { data: childFiles } = await client.storage
+            .from(STORAGE_BUCKET)
+            .list(folder, { limit: 1000 });
+          for (const child of childFiles ?? []) {
+            if (child.name) {
+              pathsToRemove.add(`${folder}/${child.name}`);
+            }
+          }
+        }
+
+        const allPaths = Array.from(pathsToRemove);
+        for (let i = 0; i < allPaths.length; i += 100) {
+          const chunk = allPaths.slice(i, i + 100);
+          const { error: rmErr } = await client.storage
+            .from(STORAGE_BUCKET)
+            .remove(chunk);
+          if (rmErr) {
+            throw new Error(`Lỗi xoá file ảnh trên Storage: ${rmErr.message}`);
+          }
+        }
+
+        // 2. Delete ALL rows in photos and sessions tables
+        const { error: photosDelErr } = await client
+          .from('photos')
+          .delete()
+          .not('id', 'is', null);
+        if (photosDelErr) {
+          throw new Error(`Lỗi xoá danh sách ảnh: ${photosDelErr.message}`);
+        }
+
+        const { error: sessionsDelErr } = await client
+          .from('sessions')
+          .delete()
+          .not('id', 'is', null);
+        if (sessionsDelErr) {
+          throw new Error(`Lỗi xoá phiên chụp: ${sessionsDelErr.message}`);
+        }
+
+        // 3. Verify server has zero remaining sessions
+        const { data: remainingSessions, error: verifyErr } = await client
+          .from('sessions')
+          .select('id')
+          .limit(1);
+        if (verifyErr) {
+          throw new Error(`Lỗi xác minh xoá phiên: ${verifyErr.message}`);
+        }
+        if (remainingSessions && remainingSessions.length > 0) {
+          throw new Error('Vẫn còn phiên trên máy chủ chưa xoá được.');
+        }
       }
 
-      try {
-        await fetchWithTimeout(`${webOriginRef.current}/api/sync`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'end_session',
-            session_id: sessionToEnd.id,
-            qr_code_hash: sessionToEnd.qr_code_hash,
-          }),
-        });
-      } catch {
-        // Ignore if offline
-      }
+      // 4. Notify /api/sync fallback store to wipe all sessions too
+      await fetchWithTimeout(`${webOriginRef.current}/api/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'end_all_sessions',
+          session_id: sessionToEnd?.id ?? null,
+          qr_code_hash: sessionToEnd?.qr_code_hash ?? null,
+        }),
+      }).catch(() => undefined);
+
+      // 5. Clear local state and persisted session only after server wipe succeeded
+      setActiveSession(null);
+      activeSessionRef.current = null;
+      await persistActiveSession(null);
+      onSessionEndedRef.current?.();
+      onShowToastRef.current?.(
+        'info',
+        'Đã kết thúc tất cả phiên và xoá sạch dữ liệu trên Web.'
+      );
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'Không thể xoá phiên trên máy chủ.';
+      onShowToastRef.current?.(
+        'error',
+        `Chưa kết thúc được phiên: ${msg}`
+      );
+    } finally {
+      endingSessionRef.current = false;
+      setEndingSession(false);
     }
-  }, [activeSession, options]);
+  }, [activeSession, persistActiveSession]);
 
   return {
     activeSession,
     activeSessionRef,
+    endingSession,
     webOrigin,
     webOriginRef,
     isUrlModalVisible,

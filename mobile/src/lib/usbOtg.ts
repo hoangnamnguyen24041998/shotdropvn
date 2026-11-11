@@ -21,10 +21,6 @@ export interface UsbCameraStatus {
   deviceName: string | null;
   totalPhotosOnCard: number;
   isCanonEos?: boolean;
-  supportsLiveView?: boolean;
-  supportsRemoteCapture?: boolean;
-  supportsAutoFocus?: boolean;
-  liveViewActive?: boolean;
   diagnosticInfo?: string;
   error?: string;
 }
@@ -33,6 +29,9 @@ export interface ImportedOtgPhoto {
   id: string;
   uri: string;
   filename: string;
+  handle?: number;
+  size?: number;
+  cameraKey?: string;
   creationTime: number;
 }
 
@@ -41,54 +40,18 @@ export interface SyncUsbCameraResult {
   newPhotos: ImportedOtgPhoto[];
 }
 
-export interface LiveViewControlResult {
-  active: boolean;
-  evfOutputDevice?: number;
-  ok?: boolean;
-  error?: string;
-}
-
-export interface LiveViewFrameResult {
-  active: boolean;
-  uri: string | null;
-  bytes?: number;
-}
-
-export interface OtgAutoFocusResult {
-  ok: boolean;
-  error?: string;
-}
-
-export interface CaptureOtgPhotoResult {
-  ok: boolean;
-  captured: boolean;
-  liveViewActive?: boolean;
-  totalPhotosOnCard?: number;
-  photos: ImportedOtgPhoto[];
-  warning?: string;
-  error?: string;
-}
-
 export interface CameraCardPhotoItem {
   handle: number;
   filename: string;
   size: number;
-  alreadyUploaded: boolean;
+  cameraKey: string;
+  alreadyUploaded?: boolean;
   thumbUri: string | null;
 }
 
 export interface CameraPhotosSummaryResult {
   totalCount: number;
-  unsyncedCount: number;
   photos: CameraCardPhotoItem[];
-  error?: string;
-}
-
-export interface SyncUnsyncedCameraResult {
-  totalOnCard: number;
-  totalUnsyncedBefore: number;
-  remainingUnsynced: number;
-  photos: ImportedOtgPhoto[];
   error?: string;
 }
 
@@ -99,18 +62,11 @@ interface ShotDropUsbOtgNativeModule {
     manualRequest: boolean,
     fetchRecentCount: number
   ): Promise<SyncUsbCameraResult>;
-  startLiveView?(): Promise<LiveViewControlResult>;
-  stopLiveView?(): Promise<LiveViewControlResult>;
-  getLiveViewFrame?(): Promise<LiveViewFrameResult | null>;
-  triggerAutoFocus?(): Promise<OtgAutoFocusResult>;
-  captureLiveViewPhoto?(withAf: boolean): Promise<CaptureOtgPhotoResult>;
   getCameraPhotosSummary?(maxItems: number): Promise<CameraPhotosSummaryResult>;
   getCameraPhotoThumbnail?(handle: number): Promise<{ uri: string | null }>;
   importCameraHandles?(
     handles: number[]
   ): Promise<{ photos: ImportedOtgPhoto[]; error?: string }>;
-  syncUnsyncedCameraPhotos?(limit: number): Promise<SyncUnsyncedCameraResult>;
-  clearCameraSessionUploads?(): Promise<boolean>;
 }
 
 const NativeUsbOtg = NativeModules.ShotDropUsbOtg as
@@ -200,108 +156,6 @@ export async function pollNewUsbCameraPhotos(
   }
 }
 
-export async function startUsbLiveView(): Promise<LiveViewControlResult> {
-  if (
-    Platform.OS !== 'android' ||
-    !NativeUsbOtg ||
-    typeof NativeUsbOtg.startLiveView !== 'function'
-  ) {
-    return { active: false, error: 'Thiết bị chưa hỗ trợ USB Live View' };
-  }
-  try {
-    return await NativeUsbOtg.startLiveView();
-  } catch (err) {
-    return {
-      active: false,
-      error: err instanceof Error ? err.message : 'Lỗi bật Live View',
-    };
-  }
-}
-
-export async function stopUsbLiveView(): Promise<LiveViewControlResult> {
-  if (
-    Platform.OS !== 'android' ||
-    !NativeUsbOtg ||
-    typeof NativeUsbOtg.stopLiveView !== 'function'
-  ) {
-    return { active: false, ok: false };
-  }
-  try {
-    return await NativeUsbOtg.stopLiveView();
-  } catch {
-    return { active: false, ok: false };
-  }
-}
-
-export async function fetchUsbLiveViewFrame(): Promise<LiveViewFrameResult | null> {
-  if (
-    Platform.OS !== 'android' ||
-    !NativeUsbOtg ||
-    typeof NativeUsbOtg.getLiveViewFrame !== 'function'
-  ) {
-    return null;
-  }
-  try {
-    return await NativeUsbOtg.getLiveViewFrame();
-  } catch {
-    return null;
-  }
-}
-
-export async function triggerUsbAutoFocus(): Promise<OtgAutoFocusResult> {
-  if (
-    Platform.OS !== 'android' ||
-    !NativeUsbOtg ||
-    typeof NativeUsbOtg.triggerAutoFocus !== 'function'
-  ) {
-    return { ok: false, error: 'Thiết bị chưa hỗ trợ AF qua USB' };
-  }
-  try {
-    return await NativeUsbOtg.triggerAutoFocus();
-  } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message : 'Lỗi lấy nét AF',
-    };
-  }
-}
-
-export async function captureUsbLiveViewPhoto(
-  withAf = true
-): Promise<CaptureOtgPhotoResult> {
-  if (
-    Platform.OS !== 'android' ||
-    !NativeUsbOtg ||
-    typeof NativeUsbOtg.captureLiveViewPhoto !== 'function'
-  ) {
-    return {
-      ok: false,
-      captured: false,
-      photos: [],
-      error: 'Thiết bị chưa hỗ trợ chụp từ xa qua USB',
-    };
-  }
-  try {
-    const res = await NativeUsbOtg.captureLiveViewPhoto(withAf);
-    return {
-      ok: Boolean(res?.ok),
-      captured: Boolean(res?.captured),
-      liveViewActive: res?.liveViewActive,
-      totalPhotosOnCard: res?.totalPhotosOnCard,
-      photos: Array.isArray(res?.photos) ? res.photos : [],
-      warning: res?.warning,
-      error: res?.error,
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      captured: false,
-      photos: [],
-      error: err instanceof Error ? err.message : 'Lỗi chụp ảnh qua USB OTG',
-    };
-  }
-}
-
 export async function getCameraPhotosSummary(
   maxItems = 120
 ): Promise<CameraPhotosSummaryResult> {
@@ -310,20 +164,18 @@ export async function getCameraPhotosSummary(
     !NativeUsbOtg ||
     typeof NativeUsbOtg.getCameraPhotosSummary !== 'function'
   ) {
-    return { totalCount: 0, unsyncedCount: 0, photos: [] };
+    return { totalCount: 0, photos: [] };
   }
   try {
     const res = await NativeUsbOtg.getCameraPhotosSummary(maxItems);
     return {
       totalCount: res?.totalCount ?? 0,
-      unsyncedCount: res?.unsyncedCount ?? 0,
       photos: Array.isArray(res?.photos) ? res.photos : [],
       error: res?.error,
     };
   } catch (err) {
     return {
       totalCount: 0,
-      unsyncedCount: 0,
       photos: [],
       error: err instanceof Error ? err.message : 'Lỗi đọc thẻ nhớ máy ảnh',
     };
@@ -369,55 +221,5 @@ export async function importCameraHandles(
       photos: [],
       error: err instanceof Error ? err.message : 'Lỗi tải ảnh từ máy ảnh',
     };
-  }
-}
-
-export async function syncUnsyncedCameraPhotos(
-  limit = 0
-): Promise<SyncUnsyncedCameraResult> {
-  if (
-    Platform.OS !== 'android' ||
-    !NativeUsbOtg ||
-    typeof NativeUsbOtg.syncUnsyncedCameraPhotos !== 'function'
-  ) {
-    return {
-      totalOnCard: 0,
-      totalUnsyncedBefore: 0,
-      remainingUnsynced: 0,
-      photos: [],
-    };
-  }
-  try {
-    const res = await NativeUsbOtg.syncUnsyncedCameraPhotos(limit);
-    return {
-      totalOnCard: res?.totalOnCard ?? 0,
-      totalUnsyncedBefore: res?.totalUnsyncedBefore ?? 0,
-      remainingUnsynced: res?.remainingUnsynced ?? 0,
-      photos: Array.isArray(res?.photos) ? res.photos : [],
-      error: res?.error,
-    };
-  } catch (err) {
-    return {
-      totalOnCard: 0,
-      totalUnsyncedBefore: 0,
-      remainingUnsynced: 0,
-      photos: [],
-      error: err instanceof Error ? err.message : 'Lỗi sync ảnh từ máy ảnh',
-    };
-  }
-}
-
-export async function clearCameraSessionUploads(): Promise<void> {
-  if (
-    Platform.OS !== 'android' ||
-    !NativeUsbOtg ||
-    typeof NativeUsbOtg.clearCameraSessionUploads !== 'function'
-  ) {
-    return;
-  }
-  try {
-    await NativeUsbOtg.clearCameraSessionUploads();
-  } catch {
-    // Ignore native cleanup failure
   }
 }

@@ -13,6 +13,9 @@ export interface LocalPhotoItem {
   filename: string;
   creationTime: number;
   base64?: string | null;
+  cameraHandle?: number;
+  cameraKey?: string;
+  fileSize?: number;
 }
 
 export interface ToastMessage {

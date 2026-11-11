@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
+import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 
 export interface StoredSession {
   id: string;
@@ -56,7 +57,12 @@ async function writeStore(data: LiveStoreData): Promise<void> {
   try {
     await fs.writeFile(LOCAL_STORE_PATH, serialized, 'utf-8');
   } catch {
+    // Ignore read-only bundle directory on serverless
+  }
+  try {
     await fs.writeFile(TMP_STORE_PATH, serialized, 'utf-8');
+  } catch {
+    // Ignore tmp write failure
   }
 }
 
@@ -67,6 +73,56 @@ export async function OPTIONS() {
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const hash = searchParams.get('hash')?.trim().toLowerCase();
+
+  // Supabase is the authoritative source of truth in production.
+  // Never resurrect stale /tmp store ghosts when Supabase has cleared/ended sessions.
+  if (isSupabaseConfigured) {
+    try {
+      const sessionQuery = supabase
+        .from('sessions')
+        .select('id, event_name, qr_code_hash, created_at, is_active, ended_at');
+
+      const { data: sessionData } = hash
+        ? await sessionQuery.eq('qr_code_hash', hash).maybeSingle()
+        : await sessionQuery
+            .eq('is_active', true)
+            .is('ended_at', null)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+      if (
+        !sessionData ||
+        sessionData.is_active === false ||
+        Boolean(sessionData.ended_at)
+      ) {
+        return NextResponse.json(
+          { session: null, photos: [], allSessions: [] },
+          { headers: corsHeaders }
+        );
+      }
+
+      const { data: photosData } = await supabase
+        .from('photos')
+        .select('id, client_photo_id, session_id, image_url, created_at')
+        .eq('session_id', sessionData.id)
+        .order('created_at', { ascending: false });
+
+      return NextResponse.json(
+        {
+          session: sessionData,
+          photos: Array.isArray(photosData) ? photosData : [],
+          allSessions: [sessionData],
+        },
+        { headers: corsHeaders }
+      );
+    } catch {
+      return NextResponse.json(
+        { session: null, photos: [], allSessions: [] },
+        { headers: corsHeaders }
+      );
+    }
+  }
 
   const store = await readStore();
 
@@ -97,7 +153,12 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as {
-      action: 'create_session' | 'upload_photo' | 'delete_photos' | 'end_session';
+      action:
+        | 'create_session'
+        | 'upload_photo'
+        | 'delete_photos'
+        | 'end_session'
+        | 'end_all_sessions';
       event_name?: string;
       qr_code_hash?: string;
       session_id?: string;
@@ -109,6 +170,17 @@ export async function POST(request: NextRequest) {
     };
 
     const store = await readStore();
+
+    if (body.action === 'end_all_sessions') {
+      store.sessions = [];
+      store.photos = [];
+      await writeStore(store);
+
+      return NextResponse.json(
+        { success: true, cleared: true, clearedAll: true },
+        { headers: corsHeaders }
+      );
+    }
 
     if (body.action === 'create_session') {
       const qrHash = (
@@ -259,44 +331,6 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json(
         { removedCount, remainingPhotos: store.photos.length },
-        { headers: corsHeaders }
-      );
-    }
-
-    if (body.action === 'end_session') {
-      const targetSessionId = body.session_id;
-      const targetHash = body.qr_code_hash?.toLowerCase();
-
-      // Find sessions to remove
-      const sessionIdsToRemove = new Set(
-        store.sessions
-          .filter(
-            (s) =>
-              (targetSessionId && s.id === targetSessionId) ||
-              (targetHash && s.qr_code_hash.toLowerCase() === targetHash)
-          )
-          .map((s) => s.id)
-      );
-
-      // Remove session from store
-      store.sessions = store.sessions.filter(
-        (s) => !sessionIdsToRemove.has(s.id)
-      );
-
-      // Also remove all associated photos
-      store.photos = store.photos.filter(
-        (p) => !sessionIdsToRemove.has(p.session_id)
-      );
-
-      await writeStore(store);
-
-      return NextResponse.json(
-        {
-          success: true,
-          removedSessionsCount: sessionIdsToRemove.size,
-          remainingSessions: store.sessions.length,
-          remainingPhotos: store.photos.length,
-        },
         { headers: corsHeaders }
       );
     }

@@ -15,6 +15,6 @@ class UsbOtgPackage : ReactPackage {
   override fun createViewManagers(
     reactContext: ReactApplicationContext
   ): List<ViewManager<*, *>> {
-    return listOf(CanonLiveViewManager())
+    return emptyList()
   }
 }

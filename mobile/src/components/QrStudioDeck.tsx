@@ -26,6 +26,7 @@ interface QrStudioDeckProps {
   webOrigin: string;
   pulseAnim: Animated.Value;
   uploading: boolean;
+  endingSession?: boolean;
   isOtgConnected: boolean;
   statusMessage: string;
   onPickPhotos: () => void;
@@ -37,6 +38,7 @@ export const QrStudioDeck: React.FC<QrStudioDeckProps> = ({
   webOrigin,
   pulseAnim,
   uploading,
+  endingSession = false,
   isOtgConnected,
   statusMessage,
   onPickPhotos,
@@ -151,15 +153,23 @@ export const QrStudioDeck: React.FC<QrStudioDeckProps> = ({
 
             <Pressable
               onPress={onEndSession}
+              disabled={endingSession || uploading}
               accessibilityRole="button"
               accessibilityLabel="Kết thúc phiên chụp hiện tại"
               style={({ pressed }) => [
                 styles.endSessionBtn,
+                (endingSession || uploading) && styles.btnDisabled,
                 pressed && styles.primaryPressed,
               ]}
             >
-              <CloseIcon size={15} color={colors.textInverse} />
-              <Text style={styles.endSessionBtnText}>Kết thúc phiên</Text>
+              {endingSession ? (
+                <ActivityIndicator size="small" color={colors.textInverse} />
+              ) : (
+                <CloseIcon size={15} color={colors.textInverse} />
+              )}
+              <Text style={styles.endSessionBtnText}>
+                {endingSession ? 'Đang xoá...' : 'Kết thúc phiên'}
+              </Text>
             </Pressable>
           </View>
         </View>

@@ -25,7 +25,6 @@ import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 
@@ -33,24 +32,14 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext), LifecycleEventListener {
 
   private val executor = Executors.newSingleThreadExecutor()
-  private val liveViewExecutor = Executors.newSingleThreadScheduledExecutor { r ->
-    Thread(r, "ShotDropLvStream").apply { isDaemon = true }
-  }
   private val usbBusLock = ReentrantLock()
   private var activeDeviceId: Int = -1
   private var activePtpClient: CanonPtpClient? = null
   private val knownObjectHandles = ConcurrentHashMap.newKeySet<Int>()
   private val ignoredNonJpegHandles = ConcurrentHashMap.newKeySet<Int>()
-  private val importedObjectHandles = ConcurrentHashMap.newKeySet<Int>()
   @Volatile private var isBaselineInitialized = false
   @Volatile private var lastKnownCardPhotoCount: Int = 0
   @Volatile private var lastFullScanAtMs: Long = 0L
-  @Volatile private var isHostActive: Boolean = true
-  @Volatile private var isLiveViewStreamActive: Boolean = false
-  @Volatile private var liveViewPumpFuture: ScheduledFuture<*>? = null
-  @Volatile private var liveViewFrameCounter: Int = 0
-  private val isFrameRequestInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
-  private val isCaptureInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
   // Permission state tracking to avoid spamming Android's USB permission dialog every poll tick
   private val permissionRequestedAtMs = ConcurrentHashMap<Int, Long>()
@@ -137,7 +126,6 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
 
   override fun invalidate() {
     super.invalidate()
-    stopNativeLiveViewPump()
     unregisterUsbReceiver()
     closeActivePtpClient()
     try {
@@ -145,21 +133,17 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
     } catch (_: Exception) {
     }
     executor.shutdownNow()
-    liveViewExecutor.shutdownNow()
   }
 
   override fun onHostResume() {
-    isHostActive = true
     // Re-check USB devices whenever user returns from USB Permission prompt or System Settings
     emitUsbChangedEvent()
   }
 
   override fun onHostPause() {
-    isHostActive = false
   }
 
   override fun onHostDestroy() {
-    stopNativeLiveViewPump()
     unregisterUsbReceiver()
     closeActivePtpClient()
   }
@@ -201,60 +185,7 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
-  private fun ensureNativeLiveViewPumpRunning() {
-    if (liveViewPumpFuture != null) return
-    liveViewPumpFuture = liveViewExecutor.scheduleWithFixedDelay({
-      try {
-        if (!isLiveViewStreamActive || !isHostActive || isCaptureInFlight.get()) {
-          return@scheduleWithFixedDelay
-        }
-        if (!CanonLiveViewHub.hasAttachedView()) {
-          return@scheduleWithFixedDelay
-        }
-        val current = activePtpClient ?: return@scheduleWithFixedDelay
-        if (!current.isHealthy() || !current.supportsLiveView) {
-          return@scheduleWithFixedDelay
-        }
-        if (!usbBusLock.tryLock()) {
-          return@scheduleWithFixedDelay
-        }
-        try {
-          if (!isLiveViewStreamActive || isCaptureInFlight.get()) {
-            return@scheduleWithFixedDelay
-          }
-          val client = activePtpClient ?: return@scheduleWithFixedDelay
-          liveViewFrameCounter++
-          val shouldDrain = (liveViewFrameCounter % 15 == 0)
-          if (client.evfMode == 0 && client.isCanonEos) {
-            client.drainCanonEvents()
-            if (client.evfMode == 0) {
-              isLiveViewStreamActive = false
-              emitUsbChangedEvent()
-              return@scheduleWithFixedDelay
-            }
-          }
-          val jpegBytes = client.getLiveViewJpegFrame(drainEvents = shouldDrain)
-          if (jpegBytes != null && jpegBytes.isNotEmpty()) {
-            CanonLiveViewHub.pushJpegFrame(jpegBytes)
-          }
-        } finally {
-          usbBusLock.unlock()
-        }
-      } catch (_: Exception) {
-      }
-    }, 0L, 33L, TimeUnit.MILLISECONDS)
-  }
-
-  private fun stopNativeLiveViewPump() {
-    isLiveViewStreamActive = false
-    val future = liveViewPumpFuture
-    liveViewPumpFuture = null
-    future?.cancel(false)
-    CanonLiveViewHub.clearFrames()
-  }
-
   private fun closeActivePtpClient() {
-    stopNativeLiveViewPump()
     val acquired = try {
       usbBusLock.tryLock(400L, TimeUnit.MILLISECONDS)
     } catch (_: Exception) {
@@ -411,11 +342,7 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
     totalPhotosOnCard: Int,
     diagnosticInfo: String = "",
     error: String? = null,
-    isCanonEos: Boolean = false,
-    supportsLiveView: Boolean = false,
-    supportsRemoteCapture: Boolean = false,
-    supportsAutoFocus: Boolean = false,
-    liveViewActive: Boolean = false
+    isCanonEos: Boolean = false
   ): WritableMap {
     return Arguments.createMap().apply {
       putBoolean("connected", connected)
@@ -424,10 +351,6 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
       if (deviceName != null) putString("deviceName", deviceName) else putNull("deviceName")
       putInt("totalPhotosOnCard", totalPhotosOnCard)
       putBoolean("isCanonEos", isCanonEos)
-      putBoolean("supportsLiveView", supportsLiveView)
-      putBoolean("supportsRemoteCapture", supportsRemoteCapture)
-      putBoolean("supportsAutoFocus", supportsAutoFocus)
-      putBoolean("liveViewActive", liveViewActive)
       if (diagnosticInfo.isNotBlank()) putString("diagnosticInfo", diagnosticInfo)
       if (!error.isNullOrBlank()) putString("error", error)
     }
@@ -667,9 +590,11 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
             lastFullScanAtMs = System.currentTimeMillis()
             totalJpegs = allHandles.size
             isBaselineInitialized = true
-          }
-
-          if (ptpClient.isCanonEos) {
+            // Flush any queued pre-connect events on first attach
+            if (ptpClient.isCanonEos) {
+              ptpClient.drainCanonEvents()
+            }
+          } else if (ptpClient.isCanonEos && fetchRecentCount == 0) {
             val drained = ptpClient.drainCanonEvents()
             for (obj in drained.addedObjects) {
               if (!ptpClient.isJpegObject(obj)) {
@@ -678,9 +603,18 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
                 }
                 continue
               }
-              val isNewHandle = knownObjectHandles.add(obj.handle)
-              if (fetchRecentCount == 0 && (isNewHandle || obj.needsTransferComplete)) {
-                importPtpRecord(ptpClient, device.deviceId, obj)?.let { importedItems.pushMap(it) }
+              if (!obj.needsTransferComplete && obj.size <= 0L) {
+                // Camera is still flushing file size to card; pick it up on next poll tick
+                continue
+              }
+              val wasNew = knownObjectHandles.add(obj.handle)
+              if (wasNew || obj.needsTransferComplete) {
+                val imported = importPtpRecord(ptpClient, device.deviceId, obj)
+                if (imported != null) {
+                  importedItems.pushMap(imported)
+                } else {
+                  knownObjectHandles.remove(obj.handle)
+                }
               }
             }
           }
@@ -688,7 +622,7 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
           val now = System.currentTimeMillis()
           val shouldRefreshCardHandles =
             fetchRecentCount > 0 ||
-              (fetchRecentCount == 0 && (!ptpClient.isCanonEos || manualRequest || (now - lastFullScanAtMs > 9000L)))
+              (fetchRecentCount == 0 && (!ptpClient.isCanonEos || manualRequest || (now - lastFullScanAtMs > 3000L)))
 
           if (shouldRefreshCardHandles) {
             val allHandles = ptpClient.getAllJpegHandles(knownObjectHandles, ignoredNonJpegHandles)
@@ -702,10 +636,12 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
               allHandles.filter { !knownObjectHandles.contains(it) }
             }
 
-            knownObjectHandles.addAll(allHandles)
             for (handle in handlesToImport) {
-              knownObjectHandles.add(handle)
-              importPtpHandle(ptpClient, device.deviceId, handle)?.let { importedItems.pushMap(it) }
+              val imported = importPtpHandle(ptpClient, device.deviceId, handle)
+              if (imported != null) {
+                knownObjectHandles.add(handle)
+                importedItems.pushMap(imported)
+              }
             }
           } else {
             totalJpegs = maxOf(lastKnownCardPhotoCount, knownObjectHandles.size)
@@ -720,7 +656,7 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
             }
             if (ptpClient.isCanonEos) {
               if (isNotEmpty()) append(" • ")
-              append("CanonPTP(LV=").append(ptpClient.evfMode).append(")")
+              append("CanonPTP")
             }
           }
 
@@ -733,11 +669,7 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
               deviceName = resolvedName,
               totalPhotosOnCard = totalJpegs,
               diagnosticInfo = diag,
-              isCanonEos = ptpClient.isCanonEos,
-              supportsLiveView = ptpClient.supportsLiveView,
-              supportsRemoteCapture = ptpClient.supportsRemoteCapture,
-              supportsAutoFocus = ptpClient.supportsAutoFocus,
-              liveViewActive = ptpClient.evfMode == 1
+              isCanonEos = ptpClient.isCanonEos
             )
           )
           resultMap.putArray("newPhotos", importedItems)
@@ -817,21 +749,26 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
         if (handlesToImport.isNotEmpty()) {
           val cacheDir = ensureOtgCacheDir()
           for (handle in handlesToImport) {
-            knownObjectHandles.add(handle)
             val info = mtpDevice.getObjectInfo(handle)
-            val rawName = info?.name?.takeIf { it.isNotBlank() } ?: "OTG_$handle.JPG"
-            val safeName = rawName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+            val safeName = sanitizeJpegName(info?.name, handle)
+            val reportedSize = (info?.compressedSize ?: 0).toLong() and 0xFFFFFFFFL
+            if (fetchRecentCount == 0 && reportedSize <= 0L) {
+              continue
+            }
             val destFile = File(cacheDir, "${device.deviceId}_${handle}_$safeName")
 
-            val importedOk = if (destFile.exists() && destFile.length() > 0) {
+            val importedOk = if (destFile.exists() && destFile.length() > 0 &&
+              (reportedSize <= 0L || destFile.length() == reportedSize)
+            ) {
               true
             } else {
               mtpDevice.importFile(handle, destFile.absolutePath)
             }
 
             if (importedOk && destFile.exists() && destFile.length() > 0) {
-              importedObjectHandles.add(handle)
-              importedItems.pushMap(buildImportedPhotoMap(device.deviceId, handle, destFile, safeName))
+              knownObjectHandles.add(handle)
+              val fileSize = if (reportedSize > 0L) reportedSize else destFile.length()
+              importedItems.pushMap(buildImportedPhotoMap(device.deviceId, handle, destFile, safeName, fileSize))
             }
           }
         }
@@ -885,17 +822,27 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
     return cacheDir
   }
 
+  private fun buildCameraKey(filename: String, size: Long, handle: Int): String {
+    val normalizedName = filename.trim().lowercase(Locale.US)
+    return if (size > 0L) "$normalizedName#$size" else "$normalizedName#h$handle"
+  }
+
   private fun buildImportedPhotoMap(
     deviceId: Int,
     handle: Int,
     destFile: File,
-    safeName: String
+    safeName: String,
+    sizeHint: Long = 0L
   ): WritableMap {
     val now = System.currentTimeMillis()
+    val resolvedSize = if (sizeHint > 0L) sizeHint else destFile.length()
     return Arguments.createMap().apply {
       putString("id", "otg-$deviceId-$handle-$now")
       putString("uri", "file://${destFile.absolutePath}")
       putString("filename", safeName)
+      putInt("handle", handle)
+      putDouble("size", resolvedSize.toDouble())
+      putString("cameraKey", buildCameraKey(safeName, resolvedSize, handle))
       putDouble("creationTime", now.toDouble())
     }
   }
@@ -935,8 +882,8 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
     }
 
     if (importedOk && destFile.exists() && destFile.length() > 0) {
-      importedObjectHandles.add(obj.handle)
-      return buildImportedPhotoMap(deviceId, obj.handle, destFile, safeName)
+      val resolvedSize = if (obj.size > 0L) obj.size else destFile.length()
+      return buildImportedPhotoMap(deviceId, obj.handle, destFile, safeName, resolvedSize)
     }
     return null
   }
@@ -976,13 +923,48 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
     return Pair(usbManager, dev)
   }
 
-  private fun collectAllOrderedCardHandlesLocked(): Pair<Int, List<Int>>? {
+  private data class CardSummaryItem(
+    val handle: Int,
+    val filename: String,
+    val size: Long,
+    val cameraKey: String,
+    val cachedThumbUri: String?
+  )
+
+  private data class CardSummarySnapshot(
+    val totalCount: Int,
+    val itemsNewestFirst: List<CardSummaryItem>
+  )
+
+  private fun collectCardSnapshotLocked(maxItems: Int): CardSummarySnapshot? {
+    val thumbDir = ensureOtgThumbDir()
     val ptp = ensureConnectedPtpClientLocked()
     if (ptp != null) {
+      val deviceId = ptp.device.deviceId
       val allHandles = ptp.getAllJpegHandles(knownObjectHandles, ignoredNonJpegHandles)
       knownObjectHandles.addAll(allHandles)
       lastKnownCardPhotoCount = allHandles.size
-      return Pair(ptp.device.deviceId, allHandles.asReversed())
+      val orderedHandles = allHandles.asReversed()
+      val itemsToDescribe = if (maxItems > 0) orderedHandles.take(maxItems) else orderedHandles
+      val items = itemsToDescribe.map { handle ->
+        val info = if (ptp.isHealthy()) ptp.getObjectInfo(handle) else null
+        val filename = sanitizeJpegName(info?.third, handle)
+        val size = info?.second ?: 0L
+        val thumbFile = File(thumbDir, "${deviceId}_${handle}.jpg")
+        val cachedThumbUri = if (thumbFile.exists() && thumbFile.length() > 0L) {
+          "file://${thumbFile.absolutePath}"
+        } else {
+          null
+        }
+        CardSummaryItem(
+          handle = handle,
+          filename = filename,
+          size = size,
+          cameraKey = buildCameraKey(filename, size, handle),
+          cachedThumbUri = cachedThumbUri
+        )
+      }
+      return CardSummarySnapshot(orderedHandles.size, items)
     }
 
     val (usbManager, dev) = findFirstPermittedCameraDevice() ?: return null
@@ -992,7 +974,27 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
       val allHandles = collectJpegHandles(mtp)
       knownObjectHandles.addAll(allHandles)
       lastKnownCardPhotoCount = allHandles.size
-      Pair(dev.deviceId, allHandles.asReversed())
+      val orderedHandles = allHandles.asReversed()
+      val itemsToDescribe = if (maxItems > 0) orderedHandles.take(maxItems) else orderedHandles
+      val items = itemsToDescribe.map { handle ->
+        val info = mtp.getObjectInfo(handle)
+        val filename = sanitizeJpegName(info?.name, handle)
+        val size = (info?.compressedSize ?: 0).toLong() and 0xFFFFFFFFL
+        val thumbFile = File(thumbDir, "${dev.deviceId}_${handle}.jpg")
+        val cachedThumbUri = if (thumbFile.exists() && thumbFile.length() > 0L) {
+          "file://${thumbFile.absolutePath}"
+        } else {
+          null
+        }
+        CardSummaryItem(
+          handle = handle,
+          filename = filename,
+          size = size,
+          cameraKey = buildCameraKey(filename, size, handle),
+          cachedThumbUri = cachedThumbUri
+        )
+      }
+      CardSummarySnapshot(orderedHandles.size, items)
     } finally {
       try {
         mtp.close()
@@ -1015,8 +1017,11 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
     if (ptp != null) {
       val deviceId = ptp.device.deviceId
       for (handle in chronological) {
-        knownObjectHandles.add(handle)
-        importPtpHandle(ptp, deviceId, handle)?.let { importedArray.pushMap(it) }
+        val imported = importPtpHandle(ptp, deviceId, handle)
+        if (imported != null) {
+          knownObjectHandles.add(handle)
+          importedArray.pushMap(imported)
+        }
       }
       return importedArray
     }
@@ -1027,15 +1032,17 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
     try {
       val cacheDir = ensureOtgCacheDir()
       for (handle in chronological) {
-        knownObjectHandles.add(handle)
         val info = mtp.getObjectInfo(handle)
         val safeName = sanitizeJpegName(info?.name, handle)
+        val reportedSize = (info?.compressedSize ?: 0).toLong() and 0xFFFFFFFFL
         val destFile = File(cacheDir, "${dev.deviceId}_${handle}_$safeName")
-        val ok = (destFile.exists() && destFile.length() > 0) ||
+        val ok = (destFile.exists() && destFile.length() > 0 &&
+          (reportedSize <= 0L || destFile.length() == reportedSize)) ||
           mtp.importFile(handle, destFile.absolutePath)
         if (ok && destFile.exists() && destFile.length() > 0) {
-          importedObjectHandles.add(handle)
-          importedArray.pushMap(buildImportedPhotoMap(dev.deviceId, handle, destFile, safeName))
+          knownObjectHandles.add(handle)
+          val fileSize = if (reportedSize > 0L) reportedSize else destFile.length()
+          importedArray.pushMap(buildImportedPhotoMap(dev.deviceId, handle, destFile, safeName, fileSize))
         }
       }
     } finally {
@@ -1097,263 +1104,37 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
-  fun startLiveView(promise: Promise) {
-    executor.execute {
-      withUsbBus {
-        try {
-          val client = ensureConnectedPtpClientLocked()
-          if (client == null) {
-            promise.resolve(Arguments.createMap().apply {
-              putBoolean("active", false)
-              putString("error", "Chưa kết nối được máy ảnh qua USB OTG")
-            })
-            return@withUsbBus
-          }
-          if (!client.supportsLiveView) {
-            promise.resolve(Arguments.createMap().apply {
-              putBoolean("active", false)
-              putString("error", "Máy ảnh không hỗ trợ Live View qua Canon EOS PTP")
-            })
-            return@withUsbBus
-          }
-          val ok = client.startLiveView()
-          val isActive = ok && client.evfMode == 1
-          isLiveViewStreamActive = isActive
-          if (isActive) {
-            ensureNativeLiveViewPumpRunning()
-          }
-          promise.resolve(Arguments.createMap().apply {
-            putBoolean("active", isActive)
-            putInt("evfOutputDevice", client.evfOutputDevice)
-            if (!ok) {
-              putString(
-                "error",
-                "Không bật được Live View (hãy kiểm tra công tắc Live View / chế độ chụp tĩnh trên máy ảnh)"
-              )
-            }
-          })
-        } catch (e: Exception) {
-          promise.resolve(Arguments.createMap().apply {
-            putBoolean("active", false)
-            putString("error", e.message ?: "Lỗi bật Live View")
-          })
-        }
-      }
-    }
-  }
-
-  @ReactMethod
-  fun stopLiveView(promise: Promise) {
-    stopNativeLiveViewPump()
-    executor.execute {
-      withUsbBus {
-        try {
-          val ok = activePtpClient?.stopLiveView() ?: true
-          promise.resolve(Arguments.createMap().apply {
-            putBoolean("active", false)
-            putBoolean("ok", ok)
-          })
-        } catch (_: Exception) {
-          promise.resolve(Arguments.createMap().apply {
-            putBoolean("active", false)
-            putBoolean("ok", false)
-          })
-        }
-      }
-    }
-  }
-
-  @ReactMethod
-  fun getLiveViewFrame(promise: Promise) {
-    // Native CanonLiveViewView streams at hardware speed; keep method for backward compatibility
-    val client = activePtpClient
-    promise.resolve(Arguments.createMap().apply {
-      putBoolean("active", isLiveViewStreamActive && (client?.evfMode == 1))
-      putNull("uri")
-    })
-  }
-
-  @ReactMethod
-  fun triggerAutoFocus(promise: Promise) {
-    executor.execute {
-      withUsbBus {
-        try {
-          val client = ensureConnectedPtpClientLocked()
-          if (client == null || !client.supportsAutoFocus) {
-            promise.resolve(Arguments.createMap().apply {
-              putBoolean("ok", false)
-              putString("error", "Máy ảnh chưa sẵn sàng lấy nét AF qua USB")
-            })
-            return@withUsbBus
-          }
-          val ok = client.triggerAutoFocus()
-          promise.resolve(Arguments.createMap().apply {
-            putBoolean("ok", ok)
-            if (!ok) {
-              putString("error", "Không thể lấy nét (kiểm tra ống kính AF hoặc ánh sáng)")
-            }
-          })
-        } catch (e: Exception) {
-          promise.resolve(Arguments.createMap().apply {
-            putBoolean("ok", false)
-            putString("error", e.message ?: "Lỗi lấy nét AF")
-          })
-        }
-      }
-    }
-  }
-
-  @ReactMethod
-  fun captureLiveViewPhoto(withAf: Boolean, promise: Promise) {
-    isCaptureInFlight.set(true)
-    try {
-      executor.execute {
-        withUsbBus {
-          try {
-            val client = ensureConnectedPtpClientLocked()
-            if (client == null) {
-              promise.resolve(Arguments.createMap().apply {
-                putBoolean("ok", false)
-                putBoolean("captured", false)
-                putArray("photos", Arguments.createArray())
-                putString("error", "Chưa kết nối được máy ảnh qua USB OTG")
-              })
-              return@withUsbBus
-            }
-            if (!client.supportsRemoteCapture) {
-              promise.resolve(Arguments.createMap().apply {
-                putBoolean("ok", false)
-                putBoolean("captured", false)
-                putArray("photos", Arguments.createArray())
-                putString("error", "Máy ảnh này chưa hỗ trợ kích hoạt màn trập từ xa")
-              })
-              return@withUsbBus
-            }
-
-            val (capturedOk, rawObjects) = client.triggerCaptureAndWaitObjects(withAf)
-            val objects = rawObjects.toMutableList()
-            if (capturedOk && objects.isEmpty()) {
-              Thread.sleep(320)
-              val extra = client.drainCanonEvents()
-              objects.addAll(extra.addedObjects)
-            }
-
-            val importedItems = Arguments.createArray()
-            val deviceId = client.device.deviceId
-            var sawRawOnly = false
-
-            for (obj in objects) {
-              if (!client.isJpegObject(obj)) {
-                sawRawOnly = true
-                if (!obj.needsTransferComplete) {
-                  ignoredNonJpegHandles.add(obj.handle)
-                }
-                continue
-              }
-              knownObjectHandles.add(obj.handle)
-              importPtpRecord(client, deviceId, obj)?.let { importedItems.pushMap(it) }
-            }
-
-            // Card diff fallback in case camera wrote JPEG quietly without ObjectAddedEx
-            if (capturedOk && importedItems.size() == 0 && !sawRawOnly) {
-              val allHandles = client.getAllJpegHandles(knownObjectHandles, ignoredNonJpegHandles)
-              lastKnownCardPhotoCount = allHandles.size
-              val newHandles = allHandles.filter { !knownObjectHandles.contains(it) }
-              knownObjectHandles.addAll(allHandles)
-              for (handle in newHandles) {
-                importPtpHandle(client, deviceId, handle)?.let { importedItems.pushMap(it) }
-              }
-            }
-
-            val totalJpegs = maxOf(lastKnownCardPhotoCount, knownObjectHandles.size)
-            var warningMsg: String? = null
-            if (capturedOk && importedItems.size() == 0 && sawRawOnly) {
-              warningMsg = "Ảnh vừa chụp chỉ ở định dạng RAW. Hãy chọn JPEG hoặc RAW+JPEG trên máy ảnh để xuất thẳng lên Web QR."
-            }
-
-            promise.resolve(Arguments.createMap().apply {
-              putBoolean("ok", capturedOk)
-              putBoolean("captured", capturedOk)
-              putBoolean("liveViewActive", client.evfMode == 1)
-              putInt("totalPhotosOnCard", totalJpegs)
-              putArray("photos", importedItems)
-              if (warningMsg != null) putString("warning", warningMsg)
-              if (!capturedOk) {
-                putString("error", "Không chụp được ảnh (kiểm tra AF/MF, thẻ nhớ hoặc nút Live View trên máy ảnh)")
-              }
-            })
-          } catch (e: Exception) {
-            promise.resolve(Arguments.createMap().apply {
-              putBoolean("ok", false)
-              putBoolean("captured", false)
-              putArray("photos", Arguments.createArray())
-              putString("error", e.message ?: "Lỗi chụp ảnh qua USB OTG")
-            })
-          } finally {
-            isCaptureInFlight.set(false)
-          }
-        }
-      }
-    } catch (e: Exception) {
-      isCaptureInFlight.set(false)
-      promise.resolve(Arguments.createMap().apply {
-        putBoolean("ok", false)
-        putBoolean("captured", false)
-        putArray("photos", Arguments.createArray())
-        putString("error", e.message ?: "USB executor bận")
-      })
-    }
-  }
-
-  @ReactMethod
   fun getCameraPhotosSummary(maxItems: Int, promise: Promise) {
     executor.execute {
       withUsbBus {
         try {
-          val card = collectAllOrderedCardHandlesLocked()
-          if (card == null) {
+          val snapshot = collectCardSnapshotLocked(maxItems)
+          if (snapshot == null) {
             promise.resolve(Arguments.createMap().apply {
               putInt("totalCount", 0)
-              putInt("unsyncedCount", 0)
               putArray("photos", Arguments.createArray())
               putString("error", "Chưa kết nối được máy ảnh qua USB OTG")
             })
             return@withUsbBus
           }
-          val (deviceId, orderedHandles) = card
-          val unsyncedCount = orderedHandles.count { !importedObjectHandles.contains(it) }
-          val thumbDir = ensureOtgThumbDir()
-          val itemsToDescribe = if (maxItems > 0) orderedHandles.take(maxItems) else orderedHandles
           val itemsArray = Arguments.createArray()
-          val ptp = activePtpClient
-
-          for (handle in itemsToDescribe) {
-            val info = if (ptp != null && ptp.isHealthy()) ptp.getObjectInfo(handle) else null
-            val filename = sanitizeJpegName(info?.third, handle)
-            val thumbFile = File(thumbDir, "${deviceId}_${handle}.jpg")
-            val cachedThumbUri = if (thumbFile.exists() && thumbFile.length() > 0L) {
-              "file://${thumbFile.absolutePath}"
-            } else {
-              null
-            }
+          for (item in snapshot.itemsNewestFirst) {
             itemsArray.pushMap(Arguments.createMap().apply {
-              putInt("handle", handle)
-              putString("filename", filename)
-              putDouble("size", (info?.second ?: 0L).toDouble())
-              putBoolean("alreadyUploaded", importedObjectHandles.contains(handle))
-              if (cachedThumbUri != null) putString("thumbUri", cachedThumbUri) else putNull("thumbUri")
+              putInt("handle", item.handle)
+              putString("filename", item.filename)
+              putDouble("size", item.size.toDouble())
+              putString("cameraKey", item.cameraKey)
+              if (item.cachedThumbUri != null) putString("thumbUri", item.cachedThumbUri) else putNull("thumbUri")
             })
           }
 
           promise.resolve(Arguments.createMap().apply {
-            putInt("totalCount", orderedHandles.size)
-            putInt("unsyncedCount", unsyncedCount)
+            putInt("totalCount", snapshot.totalCount)
             putArray("photos", itemsArray)
           })
         } catch (e: Exception) {
           promise.resolve(Arguments.createMap().apply {
             putInt("totalCount", 0)
-            putInt("unsyncedCount", 0)
             putArray("photos", Arguments.createArray())
             putString("error", e.message ?: "Không đọc được danh sách ảnh từ máy ảnh")
           })
@@ -1453,50 +1234,5 @@ class UsbOtgModule(private val reactContext: ReactApplicationContext) :
         }
       }
     }
-  }
-
-  @ReactMethod
-  fun syncUnsyncedCameraPhotos(limit: Int, promise: Promise) {
-    executor.execute {
-      withUsbBus {
-        try {
-          val card = collectAllOrderedCardHandlesLocked()
-          if (card == null) {
-            promise.resolve(Arguments.createMap().apply {
-              putInt("totalOnCard", 0)
-              putInt("totalUnsyncedBefore", 0)
-              putInt("remainingUnsynced", 0)
-              putArray("photos", Arguments.createArray())
-              putString("error", "Chưa kết nối được máy ảnh qua USB OTG")
-            })
-            return@withUsbBus
-          }
-          val (_, orderedHandles) = card
-          val unsynced = orderedHandles.filter { !importedObjectHandles.contains(it) }
-          val toSync = if (limit <= 0) unsynced else unsynced.take(limit)
-          val imported = importHandlesBatchLocked(toSync)
-          promise.resolve(Arguments.createMap().apply {
-            putInt("totalOnCard", orderedHandles.size)
-            putInt("totalUnsyncedBefore", unsynced.size)
-            putInt("remainingUnsynced", maxOf(0, unsynced.size - imported.size()))
-            putArray("photos", imported)
-          })
-        } catch (e: Exception) {
-          promise.resolve(Arguments.createMap().apply {
-            putInt("totalOnCard", 0)
-            putInt("totalUnsyncedBefore", 0)
-            putInt("remainingUnsynced", 0)
-            putArray("photos", Arguments.createArray())
-            putString("error", e.message ?: "Lỗi đồng bộ ảnh từ máy ảnh")
-          })
-        }
-      }
-    }
-  }
-
-  @ReactMethod
-  fun clearCameraSessionUploads(promise: Promise) {
-    importedObjectHandles.clear()
-    promise.resolve(true)
   }
 }

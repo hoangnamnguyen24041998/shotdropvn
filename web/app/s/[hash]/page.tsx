@@ -288,7 +288,7 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
     }
   }, []);
 
-  // 1. Initial Fetch (Supabase + Local Live Relay)
+  // 1. Initial Fetch (Supabase authoritative; Local Relay only when Supabase is unconfigured)
   useEffect(() => {
     let isMounted = true;
 
@@ -306,19 +306,23 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
             const { data } = await sessionQuery.eq('qr_code_hash', hash).maybeSingle();
             sessionData = data;
           } else {
-            // First check if there is an active session
             const { data: activeData } = await sessionQuery
               .eq('is_active', true)
+              .is('ended_at', null)
               .order('created_at', { ascending: false })
               .limit(1)
               .maybeSingle();
             sessionData = activeData;
           }
 
-          if (sessionData && isMounted) {
+          const isActiveSession =
+            Boolean(sessionData) &&
+            sessionData?.is_active !== false &&
+            !sessionData?.ended_at;
+
+          if (sessionData && isActiveSession && isMounted) {
             setSession(sessionData);
-            const isSessionActive = sessionData.is_active !== false && !sessionData.ended_at;
-            setIsLive(isSessionActive);
+            setIsLive(true);
 
             const { data: photosData } = await supabase
               .from('photos')
@@ -326,15 +330,19 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
               .eq('session_id', sessionData.id)
               .order('created_at', { ascending: false });
 
-            if (isMounted && photosData) {
-              setPhotos(photosData);
-              setLoading(false);
-              return;
+            if (isMounted) {
+              setPhotos(photosData ?? []);
             }
+          } else if (isMounted) {
+            // Session was cleared/ended or does not exist: show empty state (0 photos)
+            setSession(null);
+            setPhotos([]);
+            setIsLive(false);
           }
+          return;
         }
 
-        // Also check Local Live Relay (/api/sync) for photos pushed from Canon Connect / OTG over LAN
+        // Local Live Relay (/api/sync) fallback strictly for offline LAN development without Supabase
         const localData = await fetchLocalRelay(hash);
         if (isMounted && localData?.session) {
           setSession(localData.session);
@@ -342,6 +350,10 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
           const isSessionActive =
             localData.session.is_active !== false && !localData.session.ended_at;
           setIsLive(isSessionActive);
+        } else if (isMounted) {
+          setSession(null);
+          setPhotos([]);
+          setIsLive(false);
         }
       } finally {
         if (isMounted) {
@@ -362,65 +374,112 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
     let isMounted = true;
 
     const pollInterval = setInterval(async () => {
-      // A. Check Local Live Relay
-      const localData = await fetchLocalRelay(hash);
-      if (localData?.session) {
-        setSession((prev) => (prev ? { ...prev, ...localData.session } : localData.session));
-        const isSessionActive =
-          localData.session.is_active !== false && !localData.session.ended_at;
-        setIsLive((prevLive) => {
-          if (prevLive && !isSessionActive) {
-            setSessionJustEndedNotice(true);
-          }
-          return isSessionActive;
-        });
+      if (!isSupabaseConfigured) {
+        const localData = await fetchLocalRelay(hash);
+        if (!isMounted) return;
+        if (localData?.session) {
+          setSession((prev) => (prev ? { ...prev, ...localData.session } : localData.session));
+          const isSessionActive =
+            localData.session.is_active !== false && !localData.session.ended_at;
+          setIsLive(isSessionActive);
 
-        setPhotos((prev) => {
-          const remoteIds = new Set(localData.photos.map((p) => p.id));
-          const existingIds = new Set(prev.map((p) => p.id));
-          const incoming = localData.photos.filter((p) => !existingIds.has(p.id));
-          const wasRemoved = prev.some((p) => !remoteIds.has(p.id));
-
-          if (incoming.length === 0 && !wasRemoved) return prev;
-
-          if (incoming.length > 0) {
-            const newestId = incoming[0].id;
-            setNewlyAddedId(newestId);
-            setTimeout(() => {
-              setNewlyAddedId((curr) => (curr === newestId ? null : curr));
-            }, 3500);
-          }
-
-          return localData.photos;
-        });
+          setPhotos((prev) => {
+            const remoteIds = new Set(localData.photos.map((p) => p.id));
+            const existingIds = new Set(prev.map((p) => p.id));
+            const incoming = localData.photos.filter((p) => !existingIds.has(p.id));
+            const wasRemoved = prev.some((p) => !remoteIds.has(p.id));
+            if (incoming.length === 0 && !wasRemoved) return prev;
+            if (incoming.length > 0) {
+              const newestId = incoming[0].id;
+              setNewlyAddedId(newestId);
+              setTimeout(() => {
+                setNewlyAddedId((curr) => (curr === newestId ? null : curr));
+              }, 3500);
+            }
+            return localData.photos;
+          });
+        } else {
+          setSession(null);
+          setPhotos([]);
+          setIsLive(false);
+          setActivePhotoId(null);
+        }
+        return;
       }
 
-      // B. If Supabase is configured and we had a session, verify it's still alive in DB
-      if (isSupabaseConfigured && session?.id) {
-        try {
-          const { data: remoteSession } = await supabase
+      try {
+        if (session?.id) {
+          const { data: remoteSession, error: sessErr } = await supabase
             .from('sessions')
             .select('id, event_name, qr_code_hash, created_at, is_active, ended_at')
             .eq('id', session.id)
             .maybeSingle();
 
-          if (!isMounted) return;
+          if (!isMounted || sessErr) return;
 
-          if (!remoteSession) {
-            // Session was DELETED from DB!
+          if (!remoteSession || remoteSession.is_active === false || remoteSession.ended_at) {
+            // Session was DELETED or ENDED from Mobile -> wipe web view completely
             setSession(null);
             setPhotos([]);
             setIsLive(false);
-            setSessionJustEndedNotice(true);
-          } else if (remoteSession.is_active === false || remoteSession.ended_at) {
-            // Session was ENDED in DB!
-            setSession((prev) => (prev ? { ...prev, ...remoteSession } : (remoteSession as Session)));
-            setIsLive(false);
-            setSessionJustEndedNotice(true);
+            setActivePhotoId(null);
+            setSessionJustEndedNotice(false);
+            return;
           }
-        } catch {
-          // Ignore network glitch
+
+          const { data: freshPhotos, error: photoErr } = await supabase
+            .from('photos')
+            .select('id, session_id, image_url, created_at')
+            .eq('session_id', session.id)
+            .order('created_at', { ascending: false });
+
+          if (!isMounted || photoErr || !freshPhotos) return;
+
+          setPhotos((prev) => {
+            const remoteIds = new Set(freshPhotos.map((p) => p.id));
+            const existingIds = new Set(prev.map((p) => p.id));
+            const incoming = freshPhotos.filter((p) => !existingIds.has(p.id));
+            const wasRemoved = prev.some((p) => !remoteIds.has(p.id));
+            if (incoming.length === 0 && !wasRemoved) return prev;
+
+            if (incoming.length > 0) {
+              const newestId = incoming[0].id;
+              setNewlyAddedId(newestId);
+              setTimeout(() => {
+                setNewlyAddedId((curr) => (curr === newestId ? null : curr));
+              }, 3500);
+            }
+            return freshPhotos;
+          });
+        } else if (!hash) {
+          // On home page (/) in Standby, watch for a newly started active session
+          const { data: activeData } = await supabase
+            .from('sessions')
+            .select('id, event_name, qr_code_hash, created_at, is_active, ended_at')
+            .eq('is_active', true)
+            .is('ended_at', null)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (!isMounted || !activeData) return;
+
+          setSession(activeData);
+          setIsLive(true);
+          setSessionJustEndedNotice(false);
+
+          const { data: freshPhotos } = await supabase
+            .from('photos')
+            .select('id, session_id, image_url, created_at')
+            .eq('session_id', activeData.id)
+            .order('created_at', { ascending: false });
+
+          if (isMounted && freshPhotos) {
+            setPhotos(freshPhotos);
+          }
         }
+      } catch {
+        // Ignore transient network glitch
       }
     }, 2000);
 
@@ -483,7 +542,8 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
             setSession(null);
             setPhotos([]);
             setIsLive(false);
-            setSessionJustEndedNotice(true);
+            setActivePhotoId(null);
+            setSessionJustEndedNotice(false);
           }
         }
       )
@@ -498,14 +558,17 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
         (payload) => {
           const updated = payload.new as Session;
           if (!updated?.id) return;
-          setSession((prev) => (prev ? { ...prev, ...updated } : updated));
           const stillActive = updated.is_active !== false && !updated.ended_at;
-          setIsLive((prevLive) => {
-            if (prevLive && !stillActive) {
-              setSessionJustEndedNotice(true);
-            }
-            return stillActive;
-          });
+          if (!stillActive) {
+            setSession(null);
+            setPhotos([]);
+            setIsLive(false);
+            setActivePhotoId(null);
+            setSessionJustEndedNotice(false);
+            return;
+          }
+          setSession((prev) => (prev ? { ...prev, ...updated } : updated));
+          setIsLive(true);
         }
       )
       .subscribe((status) => {
@@ -670,7 +733,7 @@ export function LivePhotoStream({ hash }: { hash?: string }) {
       </header>
 
       {/* Realtime Session Just Ended Notice Banner */}
-      {sessionJustEndedNotice && (
+      {sessionJustEndedNotice && photos.length > 0 && (
         <div className="bg-amber-50 border-b border-amber-200/90 text-amber-900 px-3 sm:px-6 py-2.5 text-xs font-medium flex items-center justify-between gap-3 animate-slide-down">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />

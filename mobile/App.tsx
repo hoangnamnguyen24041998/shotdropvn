@@ -30,8 +30,8 @@ import { ToastBanner } from './src/components/ToastBanner';
 // Styles
 import { styles } from './src/styles/appStyles';
 
-export const APP_VERSION = '1.2.12';
-export const APP_BUILD = 15;
+export const APP_VERSION = '1.2.13';
+export const APP_BUILD = 16;
 
 export default function App() {
   const { toast, showToast } = useToast();
@@ -46,15 +46,8 @@ export default function App() {
     isOtgLiveEnabled,
     setIsOtgLiveEnabled,
     otgDirectoryUri,
-    isLiveViewActive,
-    isFocusingOtg,
-    isCapturingOtg,
-    isCapturingOtgRef,
-    setCapturingOtgState,
     handleConnectUsbOtgCamera,
     handleSelectOtgFolder,
-    handleToggleLiveView,
-    handleAutoFocusOtg,
   } = useUsbCamera({
     onStatusMessage: (msg) => showToast('info', msg),
   });
@@ -63,11 +56,15 @@ export default function App() {
 
   // Photo Synchronization Hook forward declarations
   const clearSessionPhotosRef = useRef<() => void>(() => {});
+  const restoreSessionPhotosRef = useRef<
+    (session: NonNullable<typeof activeSession>) => Promise<void>
+  >(async () => {});
 
   // Active Session Hook
   const {
     activeSession,
     activeSessionRef,
+    endingSession,
     webOrigin,
     webOriginRef,
     isUrlModalVisible,
@@ -84,6 +81,9 @@ export default function App() {
     onShowToast: showToast,
     onSessionEnded: () => {
       clearSessionPhotosRef.current();
+    },
+    onSessionRestored: (restoredSession) => {
+      void restoreSessionPhotosRef.current(restoredSession);
     },
   });
 
@@ -113,13 +113,13 @@ export default function App() {
     handleSyncCameraPhotos,
     syncCameraUnsyncedBatch,
     handleImportSelectedCameraHandles,
-    handleCaptureLiveViewPhoto,
     toggleSelectPhoto,
     handleLongPressPhoto,
     handleSelectAll,
     handleSelectAllUploaded,
     clearSelection,
     clearSessionPhotos,
+    restoreSessionPhotos,
     isPhotoUploaded,
   } = usePhotoSync({
     activeSessionRef,
@@ -134,13 +134,15 @@ export default function App() {
     otgDirectoryUri,
     usbCameraConnected: usbCameraStatus.connected,
     setUsbCameraStatus,
-    isCapturingOtgRef,
-    setCapturingOtgState,
   });
 
   useEffect(() => {
     clearSessionPhotosRef.current = clearSessionPhotos;
   }, [clearSessionPhotos]);
+
+  useEffect(() => {
+    restoreSessionPhotosRef.current = restoreSessionPhotos;
+  }, [restoreSessionPhotos]);
 
   // Pulse animation for live sync indicator
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -293,6 +295,7 @@ export default function App() {
               webOrigin={webOrigin}
               pulseAnim={pulseAnim}
               uploading={uploading}
+              endingSession={endingSession}
               isOtgConnected={isOtgConnected}
               statusMessage={statusMessage}
               onPickPhotos={handlePickUploadPhotos}
@@ -306,17 +309,11 @@ export default function App() {
               otgDirectoryUri={otgDirectoryUri}
               uploading={uploading}
               statusMessage={statusMessage}
-              isLiveViewActive={isLiveViewActive}
-              isFocusingOtg={isFocusingOtg}
-              isCapturingOtg={isCapturingOtg}
               isSyncingCamera={isSyncingCamera}
               onToggleOtgLive={() => setIsOtgLiveEnabled((prev) => !prev)}
               onConnectOtg={handleConnectUsbOtgCamera}
               onSelectOtgFolder={handleSelectOtgFolder}
               onSyncCameraPhotos={() => void handleSyncCameraPhotos()}
-              onToggleLiveView={() => void handleToggleLiveView()}
-              onAutoFocusOtg={() => void handleAutoFocusOtg()}
-              onCaptureLiveViewPhoto={() => void handleCaptureLiveViewPhoto(true)}
             />
           </View>
         }
