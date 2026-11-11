@@ -13,6 +13,7 @@ import {
   CloseIcon,
   QrViewfinderIcon,
   ShareArrowIcon,
+  UploadArrowIcon,
 } from './Icons';
 import { styles } from '../styles/appStyles';
 import { colors } from '../theme/tokens';
@@ -89,9 +90,46 @@ export const QrStudioDeck: React.FC<QrStudioDeckProps> = ({
           >
             <View style={styles.dotLive} />
             <Text style={styles.pulsingBannerText}>
-              Đồng bộ Live đang bật • Chụp thêm để tự động đẩy vào QR này
+              Đang mở phiên • Nhấn Upload để bổ sung ảnh
             </Text>
           </Animated.View>
+
+          <Pressable
+            onPress={onPickPhotos}
+            disabled={uploading}
+            accessibilityRole="button"
+            accessibilityLabel="Upload thêm ảnh vào phiên QR hiện tại"
+            style={({ pressed }) => [
+              styles.canonConnectHeroBtn,
+              { width: '100%', marginBottom: 10 },
+              uploading && styles.btnDisabled,
+              pressed && styles.primaryPressed,
+            ]}
+          >
+            {uploading ? (
+              <View style={styles.uploadingRow}>
+                <ActivityIndicator size="small" color={colors.textInverse} />
+                <Text
+                  style={styles.canonConnectHeroBtnText}
+                  numberOfLines={1}
+                >
+                  {statusMessage}
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.canonBtnInner}>
+                <View style={styles.canonBtnTitleRow}>
+                  <UploadArrowIcon size={18} color={colors.textInverse} />
+                  <Text style={styles.canonConnectHeroBtnText}>
+                    Upload thêm ảnh
+                  </Text>
+                </View>
+                <Text style={styles.canonConnectHeroBtnSub}>
+                  Chọn ảnh từ máy để đẩy tiếp vào mã QR #{activeSession.qr_code_hash}
+                </Text>
+              </View>
+            )}
+          </Pressable>
 
           <View style={styles.sessionActionRow}>
             <Pressable
@@ -127,11 +165,10 @@ export const QrStudioDeck: React.FC<QrStudioDeckProps> = ({
             <QrViewfinderIcon size={26} color={colors.textPrimary} />
           </View>
           <Text style={styles.standbyHeadline}>
-            Chụp ảnh qua cáp OTG hoặc chọn ảnh để mở mã QR Live
+            Chọn ảnh để upload & tạo mã QR
           </Text>
           <Text style={styles.standbySub}>
-            Khi cắm cáp USB OTG và chụp ảnh (hoặc chọn ảnh từ thư viện), mã QR
-            Live sẽ tự động hiển thị tại đây để khách quét nhận ảnh ngay.
+            Các ảnh bạn đã upload sẽ hiển thị ở danh sách bên dưới để quản lý.
           </Text>
 
           {/* Direct Pick Button so user can immediately launch session without OTG */}

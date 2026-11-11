@@ -1,14 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, AppState, type AppStateStatus, Platform } from 'react-native';
+import { Alert } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import * as MediaLibrary from 'expo-media-library/legacy';
 import * as FileSystem from 'expo-file-system/legacy';
 import { decode } from 'base64-arraybuffer';
 import type { ActiveSession, LocalPhotoItem } from '../types';
 import {
   STORAGE_BUCKET,
   getSupabaseClient,
-  isSupabaseReady,
 } from '../lib/supabase';
 import {
   isNativeUsbOtgAvailable,
@@ -53,7 +51,6 @@ interface UsePhotoSyncOptions {
 }
 
 export function usePhotoSync({
-  activeSessionRef,
   webOriginRef,
   ensureActiveSession,
   onShowToast,
@@ -62,6 +59,7 @@ export function usePhotoSync({
   otgDirectoryUri,
   setUsbCameraStatus,
 }: UsePhotoSyncOptions) {
+  // Strictly contains ONLY photos verified as uploaded in the current session
   const [recentPhotos, setRecentPhotos] = useState<LocalPhotoItem[]>([]);
   const [selectedPhotoIds, setSelectedPhotoIds] = useState<string[]>([]);
   const [uploadedPhotoIds, setUploadedPhotoIds] = useState<string[]>([]);
@@ -69,25 +67,19 @@ export function usePhotoSync({
     null
   );
   const [uploading, setUploading] = useState<boolean>(false);
-  const [lastSyncTime, setLastSyncTime] = useState<number>(() => Date.now());
   const [sessionPhotosCount, setSessionPhotosCount] = useState<number>(0);
-  const [isExpoGoAndroidRestricted, setIsExpoGoAndroidRestricted] =
-    useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string>(
-    'Sẵn sàng đồng bộ Live qua cáp USB OTG hoặc Canon Connect'
+    'Chọn ảnh để upload và tạo mã QR'
   );
 
   // Deleting Photos State (Loading Spinner & Toast notification)
   const [isDeletingPhotos, setIsDeletingPhotos] = useState<boolean>(false);
   const [deletingCount, setDeletingCount] = useState<number>(0);
 
-  // Synchronization refs to prevent race conditions and ID mismatch bugs
+  // Refs to prevent stale closures and race conditions
   const uploadingRef = useRef<boolean>(uploading);
-  const lastSyncTimeRef = useRef<number>(lastSyncTime);
   const uploadedIdsSetRef = useRef<Set<string>>(new Set());
   const uploadedUrisSetRef = useRef<Set<string>>(new Set());
-  const deletedIdsSetRef = useRef<Set<string>>(new Set());
-  const deletedUrisSetRef = useRef<Set<string>>(new Set());
   const uploadedMetaMapRef = useRef<Map<string, { storagePath?: string }>>(
     new Map()
   );
@@ -98,9 +90,11 @@ export function usePhotoSync({
     uploadingRef.current = uploading;
   }, [uploading]);
 
+  // Derive uploaded IDs & count cleanly from recentPhotos
   useEffect(() => {
-    lastSyncTimeRef.current = lastSyncTime;
-  }, [lastSyncTime]);
+    setUploadedPhotoIds(recentPhotos.map((p) => p.id));
+    setSessionPhotosCount(recentPhotos.length);
+  }, [recentPhotos]);
 
   const isPhotoUploaded = useCallback((item: LocalPhotoItem) => {
     return (
@@ -109,7 +103,8 @@ export function usePhotoSync({
     );
   }, []);
 
-  // Upload a batch of LocalPhotoItem to Supabase AND relay to Web Server
+  // Upload a batch of LocalPhotoItem to Supabase AND relay to Web Server.
+  // Only adds photos to `recentPhotos` AFTER upload succeeds so un-uploaded photos never appear.
   const uploadPhotosBatch = useCallback(
     async (
       itemsToUpload: LocalPhotoItem[],
@@ -128,11 +123,12 @@ export function usePhotoSync({
         );
 
         let successCount = 0;
+        let hasResetForNewSession = false;
 
         for (let i = 0; i < itemsToUpload.length; i++) {
           const item = itemsToUpload[i];
           setStatusMessage(
-            `Đang đẩy ảnh ${i + 1}/${itemsToUpload.length} lên QR #${currentSession.qr_code_hash}...`
+            `Đang upload ${i + 1}/${itemsToUpload.length}...`
           );
 
           let base64Data: string;
@@ -151,13 +147,12 @@ export function usePhotoSync({
           }
 
           const cleanFilename = (
-            item.filename || `CANON_${Date.now()}.JPG`
+            item.filename || `PHOTO_${Date.now()}.JPG`
           ).replace(/[^a-zA-Z0-9._-]/g, '_');
 
           const client = getSupabaseClient();
           const arrayBuffer = decode(base64Data);
           const storagePath = `${currentSession.id}/${Date.now()}_${cleanFilename}`;
-          uploadedMetaMapRef.current.set(item.id, { storagePath });
 
           const { error: storageErr } = await client.storage
             .from(STORAGE_BUCKET)
@@ -208,36 +203,35 @@ export function usePhotoSync({
             4000
           ).catch(() => undefined);
 
-          // Track both ID and URI for robust matching
+          // Clear previous session photo tracking once on the first succeeded upload when detaching into a new QR
+          const resetForNewSession =
+            Boolean(options?.forceNewSession) && !hasResetForNewSession;
+          if (resetForNewSession) {
+            hasResetForNewSession = true;
+            uploadedIdsSetRef.current.clear();
+            uploadedUrisSetRef.current.clear();
+            uploadedMetaMapRef.current.clear();
+          }
+
+          uploadedMetaMapRef.current.set(item.id, { storagePath });
           uploadedIdsSetRef.current.add(item.id);
           if (item.uri) {
             uploadedUrisSetRef.current.add(item.uri);
           }
           successCount += 1;
+
+          setRecentPhotos((prev) => {
+            const baseList = resetForNewSession ? [] : prev;
+            const alreadyPresent = baseList.some(
+              (p) => p.id === item.id || (Boolean(item.uri) && p.uri === item.uri)
+            );
+            return alreadyPresent ? baseList : [item, ...baseList];
+          });
         }
 
-        // Update uploaded IDs by matching both id and uri against current recentPhotos
-        setRecentPhotos((curr) => {
-          const uploadedIds = curr
-            .filter((p) => isPhotoUploaded(p))
-            .map((p) => p.id);
-          setUploadedPhotoIds(uploadedIds);
-          setSessionPhotosCount(uploadedIds.length);
-          return curr;
-        });
-
         setSelectedPhotoIds([]);
-
-        const newestTimestamp = Math.max(
-          ...itemsToUpload.map((a) => a.creationTime || 0),
-          Date.now()
-        );
-        lastSyncTimeRef.current = newestTimestamp;
-        setLastSyncTime(newestTimestamp);
-
-        setStatusMessage(
-          `Đã đẩy Live ${successCount} ảnh lên Web • QR #${currentSession.qr_code_hash}`
-        );
+        setStatusMessage(`Đã upload ${successCount} ảnh lên Web`);
+        onShowToast('success', `Đã upload ${successCount} ảnh thành công!`);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error('[ShotDropVN] Upload to Supabase failed:', err);
@@ -251,7 +245,7 @@ export function usePhotoSync({
             },
           ]);
         } else {
-          Alert.alert('Lỗi đẩy ảnh lên Supabase', msg);
+          Alert.alert('Lỗi upload ảnh', msg);
         }
       } finally {
         uploadingRef.current = false;
@@ -260,13 +254,13 @@ export function usePhotoSync({
     },
     [
       ensureActiveSession,
-      isPhotoUploaded,
       onRequestConfigureSupabase,
+      onShowToast,
       webOriginRef,
     ]
   );
 
-  // Delete one or multiple photos and synchronize removal across remote and local states
+  // Delete one or multiple uploaded photos and sync removal across remote and local states
   const executeDeletePhotos = useCallback(
     async (idsToRemove: string[]) => {
       if (idsToRemove.length === 0) return;
@@ -282,11 +276,9 @@ export function usePhotoSync({
         const urisToDelete = new Set(itemsToDelete.map((p) => p.uri));
 
         for (const id of idsToRemove) {
-          deletedIdsSetRef.current.add(id);
           uploadedIdsSetRef.current.delete(id);
         }
         for (const uri of urisToDelete) {
-          deletedUrisSetRef.current.add(uri);
           uploadedUrisSetRef.current.delete(uri);
         }
 
@@ -342,7 +334,7 @@ export function usePhotoSync({
           // Ignore offline
         }
 
-        // 3. Update local photos list and recalculate uploadedPhotoIds accurately
+        // 3. Update local uploaded photos list cleanly
         setRecentPhotos((prev) => {
           const remaining = prev.filter(
             (item) => !idSet.has(item.id) && !urisToDelete.has(item.uri)
@@ -351,14 +343,6 @@ export function usePhotoSync({
           if (remaining.length === 0) {
             uploadedIdsSetRef.current.clear();
             uploadedUrisSetRef.current.clear();
-            setUploadedPhotoIds([]);
-            setSessionPhotosCount(0);
-          } else {
-            const remainingUploaded = remaining
-              .filter((p) => isPhotoUploaded(p))
-              .map((p) => p.id);
-            setUploadedPhotoIds(remainingUploaded);
-            setSessionPhotosCount(remainingUploaded.length);
           }
 
           return remaining;
@@ -379,10 +363,10 @@ export function usePhotoSync({
         setDeletingCount(0);
       }
     },
-    [isPhotoUploaded, onShowToast, recentPhotos, webOriginRef]
+    [onShowToast, recentPhotos, webOriginRef]
   );
 
-  // Pick photos from Canon Connect / System Photo Picker
+  // Pick photos from phone gallery / Canon Connect and upload immediately
   const handlePickFromCanonConnect = useCallback(async () => {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -400,27 +384,16 @@ export function usePhotoSync({
 
       const pickedItems: LocalPhotoItem[] = result.assets.map((asset, idx) => {
         const itemId = asset.assetId || `pick-${Date.now()}-${idx}`;
-        deletedIdsSetRef.current.delete(itemId);
-        if (asset.uri) {
-          deletedUrisSetRef.current.delete(asset.uri);
-        }
         return {
           id: itemId,
           uri: asset.uri,
-          filename: asset.fileName || `CANON_${Date.now()}_${idx + 1}.JPG`,
+          filename: asset.fileName || `PHOTO_${Date.now()}_${idx + 1}.JPG`,
           creationTime: Date.now() + idx,
           base64: asset.base64,
         };
       });
 
-      // Insert and preserve all picked items into recentPhotos
-      setRecentPhotos((prev) => {
-        const existingUris = new Set(prev.map((p) => p.uri));
-        const newUnique = pickedItems.filter((p) => !existingUris.has(p.uri));
-        return [...newUnique, ...prev];
-      });
-
-      // Automatically upload the picked photos and generate the live QR code
+      // Upload directly; only successfully uploaded items will appear in the list below
       await uploadPhotosBatch(pickedItems);
     } catch (err) {
       const msg =
@@ -429,7 +402,7 @@ export function usePhotoSync({
     }
   }, [uploadPhotosBatch]);
 
-  // Pull N latest photos from connected USB camera
+  // Pull N latest photos from connected USB OTG camera and upload immediately
   const handlePullLatestFromOtgCard = useCallback(
     async (count = 5) => {
       if (uploadingRef.current) return;
@@ -452,115 +425,12 @@ export function usePhotoSync({
         creationTime: p.creationTime,
       }));
 
-      setRecentPhotos((prev) => {
-        const existingUris = new Set(prev.map((i) => i.uri));
-        const newUnique = items.filter((i) => !existingUris.has(i.uri));
-        return [...newUnique, ...prev];
-      });
-
       await uploadPhotosBatch(items);
     },
     [uploadPhotosBatch]
   );
 
-  // Sync with MediaStore without wiping picked items
-  const fetchAndSyncMediaLibrary = useCallback(
-    async (options?: { checkAutoUpload?: boolean }) => {
-      try {
-        const perm = await MediaLibrary.getPermissionsAsync(false, ['photo']);
-        if (perm.status !== 'granted') return;
-
-        const result = await MediaLibrary.getAssetsAsync({
-          first: 20,
-          mediaType: 'photo',
-          sortBy: [[MediaLibrary.SortBy.creationTime, false]],
-        });
-
-        const assets: LocalPhotoItem[] = (result.assets ?? [])
-          .filter(
-            (a) =>
-              !deletedIdsSetRef.current.has(a.id) &&
-              !deletedUrisSetRef.current.has(a.uri)
-          )
-          .map((a) => ({
-            id: a.id,
-            uri: a.uri,
-            filename: a.filename || `IMG_${a.id}.JPG`,
-            creationTime: a.creationTime || 0,
-          }));
-
-        // Deduplicate and merge without dropping previously picked photos
-        setRecentPhotos((prev) => {
-          if (assets.length === 0) return prev;
-          const existingIds = new Set(prev.map((p) => p.id));
-          const existingUris = new Set(prev.map((p) => p.uri));
-
-          const newAssets = assets.filter(
-            (a) => !existingIds.has(a.id) && !existingUris.has(a.uri)
-          );
-
-          // Sync uploaded status between picked items and newly discovered gallery assets
-          assets.forEach((a) => {
-            if (uploadedUrisSetRef.current.has(a.uri)) {
-              uploadedIdsSetRef.current.add(a.id);
-            }
-          });
-
-          return [...prev, ...newAssets];
-        });
-
-        if (
-          options?.checkAutoUpload &&
-          !uploadingRef.current &&
-          activeSessionRef.current !== null
-        ) {
-          const threshold = lastSyncTimeRef.current;
-          const newlyArrived = assets.filter(
-            (a) =>
-              a.creationTime > threshold &&
-              !uploadedIdsSetRef.current.has(a.id) &&
-              !uploadedUrisSetRef.current.has(a.uri)
-          );
-
-          if (newlyArrived.length > 0) {
-            await uploadPhotosBatch(newlyArrived);
-          }
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : '';
-        if (msg.includes('Expo Go')) {
-          setIsExpoGoAndroidRestricted(true);
-        }
-      }
-    },
-    [activeSessionRef, uploadPhotosBatch]
-  );
-
-  // Initialize MediaLibrary permissions
-  useEffect(() => {
-    async function initPerms() {
-      const isExpoGoRuntime = Boolean(
-        (globalThis as { expo?: { modules?: { ExpoGo?: unknown } } }).expo
-          ?.modules?.ExpoGo
-      );
-
-      if (Platform.OS === 'android' && isExpoGoRuntime) {
-        setIsExpoGoAndroidRestricted(true);
-      } else {
-        try {
-          await MediaLibrary.requestPermissionsAsync(false, ['photo']);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : '';
-          if (msg.includes('Expo Go')) {
-            setIsExpoGoAndroidRestricted(true);
-          }
-        }
-      }
-    }
-    void initPerms();
-  }, []);
-
-  // Continuous background polling loop (OTG, SAF, and Gallery auto-sync)
+  // Continuous background polling strictly for physical USB OTG camera / SAF folder
   useEffect(() => {
     if (!isOtgLiveEnabled) return;
 
@@ -583,7 +453,6 @@ export function usePhotoSync({
                 creationTime: p.creationTime,
               }));
 
-              setRecentPhotos((prev) => [...newItems, ...prev]);
               await uploadPhotosBatch(newItems);
               return;
             }
@@ -619,17 +488,12 @@ export function usePhotoSync({
                 }
               );
 
-              setRecentPhotos((prev) => [...safItems, ...prev]);
               await uploadPhotosBatch(safItems);
               return;
             }
           } catch {
             // Ignore SAF read error if unplugged
           }
-        }
-
-        if (!isExpoGoAndroidRestricted && activeSessionRef.current !== null) {
-          await fetchAndSyncMediaLibrary({ checkAutoUpload: true });
         }
       } finally {
         isOtgPollingRef.current = false;
@@ -638,30 +502,11 @@ export function usePhotoSync({
 
     return () => clearInterval(interval);
   }, [
-    activeSessionRef,
-    fetchAndSyncMediaLibrary,
-    isExpoGoAndroidRestricted,
     isOtgLiveEnabled,
     otgDirectoryUri,
     setUsbCameraStatus,
     uploadPhotosBatch,
   ]);
-
-  // AppState change listener
-  useEffect(() => {
-    const handleAppStateChange = (nextState: AppStateStatus) => {
-      if (
-        nextState === 'active' &&
-        !isExpoGoAndroidRestricted &&
-        activeSessionRef.current !== null
-      ) {
-        void fetchAndSyncMediaLibrary({ checkAutoUpload: true });
-      }
-    };
-
-    const sub = AppState.addEventListener('change', handleAppStateChange);
-    return () => sub.remove();
-  }, [activeSessionRef, fetchAndSyncMediaLibrary, isExpoGoAndroidRestricted]);
 
   const toggleSelectPhoto = useCallback((id: string) => {
     setLongPressedPhotoId(null);
@@ -697,12 +542,8 @@ export function usePhotoSync({
     setSessionPhotosCount(0);
     uploadedIdsSetRef.current.clear();
     uploadedUrisSetRef.current.clear();
-    deletedIdsSetRef.current.clear();
-    deletedUrisSetRef.current.clear();
     uploadedMetaMapRef.current.clear();
-    const now = Date.now();
-    setLastSyncTime(now);
-    lastSyncTimeRef.current = now;
+    setStatusMessage('Chọn ảnh để upload và tạo mã QR');
   }, []);
 
   return {

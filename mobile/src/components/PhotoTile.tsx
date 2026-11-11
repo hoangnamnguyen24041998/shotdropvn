@@ -80,20 +80,6 @@ export const PhotoTile: React.FC<PhotoTileProps> = ({
 
           <View style={styles.longPressButtonsRow}>
             <Pressable
-              onPress={() => onUploadSingle(item)}
-              disabled={uploading}
-              accessibilityLabel="Upload tiếp ảnh này"
-              style={({ pressed }) => [
-                styles.iconCircleBtn,
-                styles.iconCircleUpload,
-                pressed && styles.primaryPressed,
-              ]}
-            >
-              <UploadArrowIcon size={18} color={colors.textInverse} />
-              <Text style={styles.iconCircleLabel}>Upload</Text>
-            </Pressable>
-
-            <Pressable
               onPress={() => onDeleteSingle(item.id)}
               disabled={uploading || isDeletingPhotos}
               accessibilityLabel="Xoá ảnh này"

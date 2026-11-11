@@ -191,21 +191,6 @@ export const SelectionMenuModal: React.FC<SelectionMenuModalProps> = ({
                 </Text>
               </Pressable>
 
-              {uploadedPhotoIds.length > 0 && (
-                <Pressable
-                  onPress={onSelectAllUploaded}
-                  style={({ pressed }) => [
-                    styles.expandedChipBtn,
-                    pressed && styles.subtlePressed,
-                  ]}
-                >
-                  <CheckIcon size={12} color={colors.liveDark} />
-                  <Text style={styles.expandedChipBtnText}>
-                    Đã đẩy ({uploadedPhotoIds.length})
-                  </Text>
-                </Pressable>
-              )}
-
               <Pressable
                 onPress={onClose}
                 style={({ pressed }) => [
@@ -229,32 +214,6 @@ export const SelectionMenuModal: React.FC<SelectionMenuModalProps> = ({
 
             {/* Primary Actions Stack */}
             <View style={styles.centerModalActionsStack}>
-              <Pressable
-                onPress={() => onUploadSelected(false)}
-                disabled={uploading}
-                style={({ pressed }) => [
-                  styles.centerPrimaryUploadBtn,
-                  uploading && styles.btnDisabled,
-                  pressed && styles.primaryPressed,
-                ]}
-              >
-                <View style={styles.menuUploadIconBadge}>
-                  <UploadArrowIcon size={18} color={colors.textInverse} />
-                </View>
-                <View style={styles.menuUploadTextCol}>
-                  <Text style={styles.centerPrimaryUploadTitle}>
-                    {activeSession
-                      ? `Upload tiếp ${selectedPhotoIds.length} ảnh vào QR hiện tại`
-                      : `Tạo mã QR & Upload ${selectedPhotoIds.length} ảnh`}
-                  </Text>
-                  <Text style={styles.centerPrimaryUploadSub}>
-                    {activeSession
-                      ? `Đẩy thẳng lên phiên #${activeSession.qr_code_hash}`
-                      : 'Khởi tạo ngay mã QR Live mới trên Web'}
-                  </Text>
-                </View>
-              </Pressable>
-
               <Pressable
                 onPress={() => onUploadSelected(true)}
                 disabled={uploading}

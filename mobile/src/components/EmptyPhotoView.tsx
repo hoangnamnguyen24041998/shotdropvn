@@ -11,11 +11,10 @@ export const EmptyPhotoView: React.FC = () => {
         <CameraApertureIcon size={24} color={colors.textSecondary} />
       </View>
       <Text style={styles.emptyTitle}>
-        Đang chờ ảnh mới từ cáp USB OTG hoặc thư viện
+        Chưa có ảnh nào được upload
       </Text>
       <Text style={styles.emptySub}>
-        Cắm cáp USB OTG từ máy ảnh vào điện thoại và bấm chụp để ảnh tự động đẩy
-        lên Web, hoặc nhấn nút chọn ảnh phía trên.
+        Nhấn nút chọn ảnh / upload phía trên để đẩy ảnh lên mã QR.
       </Text>
     </View>
   );
