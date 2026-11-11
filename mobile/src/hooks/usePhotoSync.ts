@@ -9,6 +9,7 @@ import {
   getSupabaseClient,
 } from '../lib/supabase';
 import {
+  captureUsbLiveViewPhoto,
   isNativeUsbOtgAvailable,
   syncUsbCamera,
   type UsbCameraStatus,
@@ -47,6 +48,8 @@ interface UsePhotoSyncOptions {
   isOtgLiveEnabled: boolean;
   otgDirectoryUri: string | null;
   setUsbCameraStatus: React.Dispatch<React.SetStateAction<UsbCameraStatus>>;
+  isCapturingOtgRef?: React.MutableRefObject<boolean>;
+  setCapturingOtgState?: (next: boolean) => void;
 }
 
 export function usePhotoSync({
@@ -57,6 +60,8 @@ export function usePhotoSync({
   isOtgLiveEnabled,
   otgDirectoryUri,
   setUsbCameraStatus,
+  isCapturingOtgRef,
+  setCapturingOtgState,
 }: UsePhotoSyncOptions) {
   // Strictly contains ONLY photos verified as uploaded in the current session
   const [recentPhotos, setRecentPhotos] = useState<LocalPhotoItem[]>([]);
@@ -434,12 +439,73 @@ export function usePhotoSync({
     [setUsbCameraStatus, uploadPhotosBatch]
   );
 
+  // Trigger remote shutter via USB OTG (even while Live View is active) and push JPEG straight to QR Web
+  const handleCaptureLiveViewPhoto = useCallback(
+    async (withAf = true) => {
+      if (uploadingRef.current || isCapturingOtgRef?.current) return;
+      setCapturingOtgState?.(true);
+      isOtgPollingRef.current = true;
+      setStatusMessage('Đang chụp & xuất ảnh từ máy ảnh qua USB OTG...');
+
+      let importedPhotos: LocalPhotoItem[] = [];
+      try {
+        const res = await captureUsbLiveViewPhoto(withAf);
+        setUsbCameraStatus((prev) => ({
+          ...prev,
+          liveViewActive: res.liveViewActive ?? prev.liveViewActive,
+          totalPhotosOnCard: res.totalPhotosOnCard ?? prev.totalPhotosOnCard,
+        }));
+
+        if (!res.ok) {
+          const errMsg =
+            res.error || 'Không thể chụp từ xa qua USB OTG trên máy ảnh';
+          setStatusMessage(`Lỗi chụp OTG: ${errMsg}`);
+          onShowToast('error', errMsg);
+          return;
+        }
+
+        if (res.warning) {
+          onShowToast('info', res.warning);
+        }
+
+        importedPhotos = res.photos.map((p) => ({
+          id: p.id,
+          uri: p.uri,
+          filename: p.filename,
+          creationTime: p.creationTime,
+        }));
+      } finally {
+        setCapturingOtgState?.(false);
+        isOtgPollingRef.current = false;
+      }
+
+      if (importedPhotos.length > 0) {
+        await uploadPhotosBatch(importedPhotos);
+      } else {
+        setStatusMessage('Đã chụp trên máy ảnh, đang đồng bộ ảnh JPEG...');
+      }
+    },
+    [
+      isCapturingOtgRef,
+      onShowToast,
+      setCapturingOtgState,
+      setUsbCameraStatus,
+      uploadPhotosBatch,
+    ]
+  );
+
   // Continuous background polling strictly for physical USB OTG camera / SAF folder
   useEffect(() => {
     if (!isOtgLiveEnabled) return;
 
     const interval = setInterval(async () => {
-      if (isOtgPollingRef.current || uploadingRef.current) return;
+      if (
+        isOtgPollingRef.current ||
+        uploadingRef.current ||
+        isCapturingOtgRef?.current
+      ) {
+        return;
+      }
       isOtgPollingRef.current = true;
 
       try {
@@ -574,6 +640,7 @@ export function usePhotoSync({
     executeDeletePhotos,
     handlePickFromCanonConnect,
     handlePullLatestFromOtgCard,
+    handleCaptureLiveViewPhoto,
     toggleSelectPhoto,
     handleLongPressPhoto,
     handleSelectAll,

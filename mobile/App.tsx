@@ -29,8 +29,8 @@ import { ToastBanner } from './src/components/ToastBanner';
 // Styles
 import { styles } from './src/styles/appStyles';
 
-export const APP_VERSION = '1.2.10';
-export const APP_BUILD = 13;
+export const APP_VERSION = '1.2.11';
+export const APP_BUILD = 14;
 
 export default function App() {
   const { toast, showToast } = useToast();
@@ -45,8 +45,16 @@ export default function App() {
     isOtgLiveEnabled,
     setIsOtgLiveEnabled,
     otgDirectoryUri,
+    isLiveViewActive,
+    liveViewFrameUri,
+    isFocusingOtg,
+    isCapturingOtg,
+    isCapturingOtgRef,
+    setCapturingOtgState,
     handleConnectUsbOtgCamera,
     handleSelectOtgFolder,
+    handleToggleLiveView,
+    handleAutoFocusOtg,
   } = useUsbCamera({
     onStatusMessage: (msg) => showToast('info', msg),
   });
@@ -93,6 +101,7 @@ export default function App() {
     executeDeletePhotos,
     handlePickFromCanonConnect,
     handlePullLatestFromOtgCard,
+    handleCaptureLiveViewPhoto,
     toggleSelectPhoto,
     handleLongPressPhoto,
     handleSelectAll,
@@ -112,6 +121,8 @@ export default function App() {
     isOtgLiveEnabled,
     otgDirectoryUri,
     setUsbCameraStatus,
+    isCapturingOtgRef,
+    setCapturingOtgState,
   });
 
   useEffect(() => {
@@ -281,10 +292,17 @@ export default function App() {
               otgDirectoryUri={otgDirectoryUri}
               uploading={uploading}
               statusMessage={statusMessage}
+              isLiveViewActive={isLiveViewActive}
+              liveViewFrameUri={liveViewFrameUri}
+              isFocusingOtg={isFocusingOtg}
+              isCapturingOtg={isCapturingOtg}
               onToggleOtgLive={() => setIsOtgLiveEnabled((prev) => !prev)}
               onConnectOtg={handleConnectUsbOtgCamera}
               onSelectOtgFolder={handleSelectOtgFolder}
               onPullLatestPhotos={handlePullLatestFromOtgCard}
+              onToggleLiveView={() => void handleToggleLiveView()}
+              onAutoFocusOtg={() => void handleAutoFocusOtg()}
+              onCaptureLiveViewPhoto={() => void handleCaptureLiveViewPhoto(true)}
             />
           </View>
         }

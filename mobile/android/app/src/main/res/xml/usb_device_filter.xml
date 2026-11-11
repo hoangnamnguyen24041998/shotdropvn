@@ -2,4 +2,6 @@
 <resources>
     <!-- USB Still Image / PTP / MTP Cameras (Class 6, device or interface level) -->
     <usb-device class="6" />
+    <!-- Canon Inc. EOS / PowerShot USB cameras (vendor ID 0x04A9 = 1193) -->
+    <usb-device vendor-id="1193" />
 </resources>

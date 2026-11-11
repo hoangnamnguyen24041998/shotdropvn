@@ -1,7 +1,8 @@
 import React from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Image, Pressable, Text, View } from 'react-native';
 import {
   BoltIcon,
+  CameraApertureIcon,
   DownloadTrayIcon,
   UsbCableIcon,
 } from './Icons';
@@ -15,10 +16,17 @@ interface OtgTetherConsoleProps {
   otgDirectoryUri: string | null;
   uploading: boolean;
   statusMessage: string;
+  isLiveViewActive: boolean;
+  liveViewFrameUri: string | null;
+  isFocusingOtg: boolean;
+  isCapturingOtg: boolean;
   onToggleOtgLive: () => void;
   onConnectOtg: () => void;
   onSelectOtgFolder: () => void;
   onPullLatestPhotos: (count: number) => void;
+  onToggleLiveView: () => void;
+  onAutoFocusOtg: () => void;
+  onCaptureLiveViewPhoto: () => void;
 }
 
 export const OtgTetherConsole: React.FC<OtgTetherConsoleProps> = ({
@@ -27,10 +35,17 @@ export const OtgTetherConsole: React.FC<OtgTetherConsoleProps> = ({
   otgDirectoryUri,
   uploading,
   statusMessage,
+  isLiveViewActive,
+  liveViewFrameUri,
+  isFocusingOtg,
+  isCapturingOtg,
   onToggleOtgLive,
   onConnectOtg,
   onSelectOtgFolder,
   onPullLatestPhotos,
+  onToggleLiveView,
+  onAutoFocusOtg,
+  onCaptureLiveViewPhoto,
 }) => {
   // Only render OTG console when a physical USB device / Hub / camera / SAF OTG folder is present
   const hasUsbActivity =
@@ -176,11 +191,101 @@ export const OtgTetherConsole: React.FC<OtgTetherConsoleProps> = ({
         </Pressable>
       </View>
 
+      {/* Canon Live View Stream Frame */}
+      {usbCameraStatus.supportsLiveView && isLiveViewActive && (
+        <View style={styles.otgLiveViewFrame}>
+          {liveViewFrameUri ? (
+            <Image
+              source={{ uri: liveViewFrameUri }}
+              style={styles.otgLiveViewImage}
+              resizeMode="cover"
+              fadeDuration={0}
+            />
+          ) : (
+            <View style={styles.otgLiveViewPlaceholder}>
+              <ActivityIndicator size="small" color="#CBD5E1" />
+              <Text style={styles.otgLiveViewPlaceholderText}>
+                Đang nhận khung hình Live View qua USB OTG...
+              </Text>
+            </View>
+          )}
+          <View style={styles.otgLiveViewBadge}>
+            <View style={styles.otgLiveViewDot} />
+            <Text style={styles.otgLiveViewBadgeText}>LIVE VIEW</Text>
+          </View>
+          {isCapturingOtg && (
+            <View style={styles.otgCaptureOverlayBadge}>
+              <Text style={styles.otgCaptureOverlayText}>
+                Đang chụp & xuất ảnh...
+              </Text>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* Remote Live View / AF / Shutter Controls (Canon EOS PTP) */}
+      {(usbCameraStatus.supportsLiveView ||
+        usbCameraStatus.supportsRemoteCapture) && (
+        <View style={styles.otgRemoteControlsRow}>
+          {usbCameraStatus.supportsAutoFocus && (
+            <Pressable
+              onPress={onAutoFocusOtg}
+              disabled={isFocusingOtg || isCapturingOtg || uploading}
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.otgAfBtn,
+                pressed && styles.subtlePressed,
+                (isFocusingOtg || isCapturingOtg || uploading) &&
+                  styles.otgShutterBtnDisabled,
+              ]}
+            >
+              <Text style={styles.otgAfBtnText}>
+                {isFocusingOtg ? 'AF...' : 'AF'}
+              </Text>
+            </Pressable>
+          )}
+
+          {usbCameraStatus.supportsRemoteCapture && (
+            <Pressable
+              onPress={onCaptureLiveViewPhoto}
+              disabled={isCapturingOtg || uploading}
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.otgShutterBtn,
+                pressed && styles.primaryPressed,
+                (isCapturingOtg || uploading) && styles.otgShutterBtnDisabled,
+              ]}
+            >
+              <CameraApertureIcon size={16} color="#FFFFFF" />
+              <Text style={styles.otgShutterBtnText}>
+                {isCapturingOtg ? 'Đang chụp...' : 'Chụp Live View'}
+              </Text>
+            </Pressable>
+          )}
+
+          {usbCameraStatus.supportsLiveView && (
+            <Pressable
+              onPress={onToggleLiveView}
+              disabled={isCapturingOtg}
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.otgAfBtn,
+                pressed && styles.subtlePressed,
+              ]}
+            >
+              <Text style={styles.otgAfBtnText}>
+                {isLiveViewActive ? 'Tắt LV' : 'Live View'}
+              </Text>
+            </Pressable>
+          )}
+        </View>
+      )}
+
       {/* Secondary OTG Hardware Controls */}
       <View style={styles.otgActionButtonsRow}>
         <Pressable
           onPress={onConnectOtg}
-          disabled={uploading}
+          disabled={uploading || isCapturingOtg}
           accessibilityRole="button"
           style={({ pressed }) => [
             styles.otgSecondaryBtn,
@@ -193,7 +298,7 @@ export const OtgTetherConsole: React.FC<OtgTetherConsoleProps> = ({
 
         <Pressable
           onPress={() => onPullLatestPhotos(5)}
-          disabled={uploading}
+          disabled={uploading || isCapturingOtg}
           accessibilityRole="button"
           style={({ pressed }) => [
             styles.otgPrimaryBtn,
@@ -201,7 +306,7 @@ export const OtgTetherConsole: React.FC<OtgTetherConsoleProps> = ({
           ]}
         >
           <DownloadTrayIcon size={16} color={colors.textInverse} />
-          <Text style={styles.otgPrimaryBtnText}>Lấy 5 ảnh vừa chụp</Text>
+          <Text style={styles.otgPrimaryBtnText}>Xuất 5 ảnh mới</Text>
         </Pressable>
       </View>
 
