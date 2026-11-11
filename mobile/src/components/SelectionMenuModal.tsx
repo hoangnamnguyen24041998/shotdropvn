@@ -162,31 +162,33 @@ export const SelectionMenuModal: React.FC<SelectionMenuModalProps> = ({
             {/* Quick Filter Chips */}
             <View style={styles.expandedQuickSelectRow}>
               {selectedPhotos.length < recentPhotos.length && (
-                <Pressable
-                  onPress={onSelectAll}
-                  style={({ pressed }) => [
-                    styles.expandedChipBtn,
-                    pressed && styles.subtlePressed,
-                  ]}
-                >
-                  <CheckIcon size={12} color={colors.textPrimary} />
-                  <Text style={styles.expandedChipBtnText}>
-                    Chọn tất cả ({recentPhotos.length})
-                  </Text>
-                </Pressable>
-              )}
+                <>
+                  <Pressable
+                    onPress={onSelectAll}
+                    style={({ pressed }) => [
+                      styles.expandedChipBtn,
+                      pressed && styles.subtlePressed,
+                    ]}
+                  >
+                    <CheckIcon size={12} color={colors.textPrimary} />
+                    <Text style={styles.expandedChipBtnText}>
+                      Chọn tất cả ({recentPhotos.length})
+                    </Text>
+                  </Pressable>
 
-              <Pressable
-                onPress={onClose}
-                style={({ pressed }) => [
-                  styles.expandedChipBtn,
-                  pressed && styles.subtlePressed,
-                ]}
-              >
-                <Text style={styles.expandedChipBtnText}>
-                  Chọn thêm trên lưới
-                </Text>
-              </Pressable>
+                  <Pressable
+                    onPress={onClose}
+                    style={({ pressed }) => [
+                      styles.expandedChipBtn,
+                      pressed && styles.subtlePressed,
+                    ]}
+                  >
+                    <Text style={styles.expandedChipBtnText}>
+                      Chọn thêm ảnh
+                    </Text>
+                  </Pressable>
+                </>
+              )}
 
               <Pressable
                 onPress={onClearSelection}
