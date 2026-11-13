@@ -6,11 +6,7 @@ Hệ thống **trả ảnh sự kiện & studio theo thời gian thực (Live Ph
 
 <img width="1545" height="1037" alt="Snapzy_2026-11-13_19-01-37_141" src="https://github.com/user-attachments/assets/65ef0f39-fdb0-4de7-abb6-e8d1e8c9b5c3" />
 <img width="720" height="1612" alt="shotdrop_d7307910-1883-4ff0-86e4-7efffd49b113" src="https://github.com/user-attachments/assets/9cea3a22-89ef-4e8a-95c3-25f3b54f0e07" />
-
-
-
-
-
+<video src="https://github.com/user-attachments/assets/" controls width="600"></video>
 
 ---
 
