@@ -8,6 +8,10 @@ Hệ thống **trả ảnh sự kiện & studio theo thời gian thực (Live Ph
 <img width="720" height="1612" alt="shotdrop_d7307910-1883-4ff0-86e4-7efffd49b113" src="https://github.com/user-attachments/assets/9cea3a22-89ef-4e8a-95c3-25f3b54f0e07" />
 
 
+
+
+
+
 ---
 
 ## 1. Tổng quan, cấu trúc các phần & mục đích sử dụng
